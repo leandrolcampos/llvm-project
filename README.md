@@ -2,7 +2,7 @@
 
 This repository is the LLVM fork used by [Mage](https://github.com/leandrolcampos/mage).
 
-Mage is a research project focused on developing microarchitecture-aware and portable algorithms for elementary functions on modern GPUs. It investigates trade-offs and derives optimization heuristics for lookup tables, polynomial evaluation, and precision extension across diverse GPU designs and under multiple accuracy profiles. It also explores whether GPU-optimized implementations can generalize beyond GPUs while ensuring bitwise-identical results across architectures.
+Mage is a research project focused on developing microarchitecture-aware and portable algorithms for elementary functions, such as logarithmic, exponential, and trigonometric functions, targeting modern GPUs.
 
 ## Branch model
 
