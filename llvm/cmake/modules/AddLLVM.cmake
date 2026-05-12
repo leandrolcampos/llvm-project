@@ -382,7 +382,7 @@ function(add_link_opts target_name)
           set_property(TARGET ${target_name} APPEND_STRING PROPERTY
                        LINK_FLAGS " -Wl,-z,discard-unused=sections")
         endif()
-      elseif(NOT MSVC AND NOT CMAKE_SYSTEM_NAME MATCHES "AIX|OS390")
+      elseif(NOT MSVC AND NOT CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" AND NOT CMAKE_SYSTEM_NAME MATCHES "AIX|OS390")
         # TODO Revisit this later on z/OS.
         set_property(TARGET ${target_name} APPEND_STRING PROPERTY
                      LINK_FLAGS " -Wl,--gc-sections")
@@ -803,7 +803,7 @@ function(llvm_add_library name)
         )
     endif()
 
-    if(NOT APPLE)
+    if(NOT APPLE OR LLVM_VERSIONED_DYLIB_NAME_ON_DARWIN)
       if(ARG_SONAME)
         get_target_property(output_name ${name} OUTPUT_NAME)
         if(${output_name} STREQUAL "output_name-NOTFOUND")
@@ -1906,7 +1906,7 @@ function(add_unittest test_suite test_name)
   endif()
 
   list(APPEND LLVM_LINK_COMPONENTS Support) # gtest needs it for raw_ostream
-  add_llvm_executable(${test_name} IGNORE_EXTERNALIZE_DEBUGINFO NO_INSTALL_RPATH DISABLE_PCH_REUSE ${ARGN})
+  add_llvm_executable(${test_name} IGNORE_EXTERNALIZE_DEBUGINFO NO_INSTALL_RPATH ${ARGN})
   get_subproject_title(subproject_title)
   set_target_properties(${test_name} PROPERTIES FOLDER "${subproject_title}/Tests/Unit")
 

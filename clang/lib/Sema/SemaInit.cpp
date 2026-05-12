@@ -3847,7 +3847,7 @@ bool InitializedEntity::allowsNRVO() const {
   switch (getKind()) {
   case EK_Result:
   case EK_Exception:
-    return LocAndNRVO.NRVO;
+    return LocAndNRVO.NRVO == NRVOKind::Allowed;
 
   case EK_StmtExprResult:
   case EK_Variable:
@@ -4380,10 +4380,13 @@ static void TryArrayCopy(Sema &S, const InitializationKind &Kind,
       InitializedEntity::InitializeElement(S.Context, 0, Entity);
   QualType InitEltT =
       S.Context.getAsArrayType(Initializer->getType())->getElementType();
-  OpaqueValueExpr OVE(Initializer->getExprLoc(), InitEltT,
-                      Initializer->getValueKind(),
-                      Initializer->getObjectKind());
-  Expr *OVEAsExpr = &OVE;
+
+  // FIXME: Here's a functional memory leak cuz we don't have a temporary
+  // allocator at the moment
+  OpaqueValueExpr *OVE = new (S.Context) OpaqueValueExpr(
+      Initializer->getExprLoc(), InitEltT, Initializer->getValueKind(),
+      Initializer->getObjectKind());
+  Expr *OVEAsExpr = OVE;
   Sequence.InitializeFrom(S, Element, Kind, OVEAsExpr,
                           /*TopLevelOfInitList*/ false,
                           TreatUnavailableAsInvalid);
@@ -8784,7 +8787,7 @@ ExprResult InitializationSequence::Perform(Sema &S,
         // Check initializer is 32 bit integer constant.
         // If the initializer is taken from global variable, do not diagnose since
         // this has already been done when parsing the variable declaration.
-        if (!Init->isConstantInitializer(S.Context, false))
+        if (!Init->isConstantInitializer(S.Context))
           break;
 
         if (!SourceType->isIntegerType() ||
@@ -10337,11 +10340,11 @@ QualType Sema::DeduceTemplateSpecializationFromInitializer(
                   Context.getLValueReferenceType(ElementTypes[I].withConst());
           }
 
-        if (FunctionTemplateDecl *TD =
+        if (CXXDeductionGuideDecl *GD =
                 DeclareAggregateDeductionGuideFromInitList(
                     LookupTemplateDecl, ElementTypes,
                     TSInfo->getTypeLoc().getEndLoc())) {
-          auto *GD = cast<CXXDeductionGuideDecl>(TD->getTemplatedDecl());
+          auto *TD = GD->getDescribedFunctionTemplate();
           addDeductionCandidate(TD, GD, DeclAccessPair::make(TD, AS_public),
                                 OnlyListConstructors,
                                 /*AllowAggregateDeductionCandidate=*/true);
@@ -10492,7 +10495,7 @@ QualType Sema::DeduceTemplateSpecializationFromInitializer(
 
     // Make sure we didn't select an unusable deduction guide, and mark it
     // as referenced.
-    DiagnoseUseOfDecl(Best->FoundDecl, Kind.getLocation());
+    DiagnoseUseOfDecl(Best->Function, Kind.getLocation());
     MarkFunctionReferenced(Kind.getLocation(), Best->Function);
     break;
   }
