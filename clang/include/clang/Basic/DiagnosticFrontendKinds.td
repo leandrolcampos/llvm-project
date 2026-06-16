@@ -45,8 +45,8 @@ def note_fe_backend_plugin: Note<"%0">, BackendInfo;
 
 def err_target_spirv_requires_vulkan : Error<
     "SPIR-V target requires a Vulkan environment">;
-def err_target_spirv_requires_shader_stage : Error<
-    "SPIR-V target requires a valid shader stage environment">;
+def err_target_spirv_invalid_shader_stage : Error<
+    "SPIR-V target requires a valid shader stage or no environment">;
 
 def warn_fe_override_module : Warning<
     "overriding the module target triple with %0">,
@@ -429,6 +429,11 @@ def warn_ssaf_write_tu_summary_failed :
   Warning<"failed to write TU summary to '%0': %1">,
   InGroup<ScalableStaticAnalysisFramework>, DefaultError;
 
+def warn_ssaf_tu_summary_requires_compilation_unit_id :
+  Warning<"option '--ssaf-tu-summary-file=' requires "
+          "'--ssaf-compilation-unit-id=' to be set">,
+  InGroup<ScalableStaticAnalysisFramework>, DefaultError;
+
 def err_extract_api_ignores_file_not_found :
   Error<"file '%0' specified by '--extract-api-ignores=' not found">, DefaultFatal;
 
@@ -453,6 +458,9 @@ def warn_hlsl_langstd_minimal :
   Warning<"support for HLSL language version %0 is incomplete, "
           "recommend using %1 instead">,
   InGroup<HLSLDXCCompat>;
+def warn_hlsl_failed_to_embed_source
+    : Warning<"failed to embed source for '%0' into dx.source.contents">,
+      InGroup<HLSLDXCCompat>;
 
 def err_data_layout_mismatch : Error<"backend data layout '%0' does not match "
                                      "expected target description '%1'">;
