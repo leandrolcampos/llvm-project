@@ -97,6 +97,12 @@ public:
   std::optional<uint64_t> tryEvaluateObjectSize(State &Parent, const Expr *E,
                                                 unsigned Kind);
 
+  std::optional<bool> evaluateWithSubstitution(State &Parent,
+                                               const FunctionDecl *Callee,
+                                               ArrayRef<const Expr *> Args,
+                                               const Expr *This,
+                                               const Expr *Condition);
+
   /// Returns the AST context.
   ASTContext &getASTContext() const { return Ctx; }
   /// Returns the language options.
@@ -135,8 +141,8 @@ public:
         T->isVectorType())
       return false;
 
-    if (const auto *D = T->getAsEnumDecl())
-      return D->isComplete();
+    if (T->isEnumeralType())
+      return true;
 
     return classify(T) != std::nullopt;
   }
