@@ -3118,6 +3118,22 @@ add_header_library(
 )
 
 add_header_library(
+  expf_gpu_eval
+  HDRS
+    expf_gpu_eval.h
+  DEPENDS
+    .exp2f_float_utils
+    libc.src.__support.FPUtil.double_double
+    libc.src.__support.FPUtil.fp_bits
+    libc.src.__support.FPUtil.multiply_add
+    libc.src.__support.FPUtil.nearest_integer
+    libc.src.__support.FPUtil.polyeval
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+    libc.src.__support.macros.optimization
+)
+
+add_header_library(
   expf
   HDRS
     expf.h
