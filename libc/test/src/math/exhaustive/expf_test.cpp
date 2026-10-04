@@ -57,14 +57,14 @@ TEST_F(LlvmLibcExpfFloatExhaustiveTest, NegativeRange) {
 
 #ifdef LIBC_TARGET_CPU_HAS_FMA_FLOAT
 // GPU-eval implementation: tested against the correctly rounded double
-// precision version for round-to-nearest (with 1 ULP bound for now).
+// precision version for round-to-nearest with 0 ULP bound.
 static float expf_gpu_eval(float x) {
   return LIBC_NAMESPACE::math::gpu_eval::expf(x);
 }
 
 using LlvmLibcExpfGpuExhaustiveTest =
     LlvmLibcUnaryOpAgainstBaselineExhaustiveMathTest<
-        float, LIBC_NAMESPACE::math::double_eval::expf, expf_gpu_eval, 1>;
+        float, LIBC_NAMESPACE::math::double_eval::expf, expf_gpu_eval, 0>;
 
 TEST_F(LlvmLibcExpfGpuExhaustiveTest, PositiveRange) {
   test_full_range(mpfr::RoundingMode::Nearest, POS_START, POS_STOP);
@@ -72,21 +72,6 @@ TEST_F(LlvmLibcExpfGpuExhaustiveTest, PositiveRange) {
 
 TEST_F(LlvmLibcExpfGpuExhaustiveTest, NegativeRange) {
   test_full_range(mpfr::RoundingMode::Nearest, NEG_START, NEG_STOP);
-}
-
-// Require correct rounding for normal outputs.
-using LlvmLibcExpfGpuNormalExhaustiveTest =
-    LlvmLibcUnaryOpAgainstBaselineExhaustiveMathTest<
-        float, LIBC_NAMESPACE::math::double_eval::expf, expf_gpu_eval, 0>;
-
-// [+0, 88.722831726...]
-TEST_F(LlvmLibcExpfGpuNormalExhaustiveTest, PositiveRange) {
-  test_full_range(mpfr::RoundingMode::Nearest, POS_START, 0x42b1'7217U);
-}
-
-// [-87.336540222..., -0]
-TEST_F(LlvmLibcExpfGpuNormalExhaustiveTest, NegativeRange) {
-  test_full_range(mpfr::RoundingMode::Nearest, NEG_START, 0xc2ae'ac4fU);
 }
 #endif // LIBC_TARGET_CPU_HAS_FMA_FLOAT
 
