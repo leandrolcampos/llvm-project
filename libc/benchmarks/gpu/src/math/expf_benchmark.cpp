@@ -10,6 +10,10 @@
 #include "benchmarks/gpu/Random.h"
 
 #include "hdr/stdint_proxy.h"
+
+#include "src/__support/math/expf_double_eval.h"
+#include "src/__support/math/expf_float_eval.h"
+#include "src/__support/math/expf_gpu_eval.h"
 #include "src/math/expf.h"
 
 #if defined(NVPTX_MATH_FOUND) || defined(AMDGPU_MATH_FOUND)
@@ -34,7 +38,11 @@
   SINGLE_WAVE_BENCHMARK(LlvmLibcExpfGpuBenchmark, Name##_4096,                 \
                         RANDOM_INPUT(T, Func, Dist, Min, Max, 4096))
 
-using LIBC_NAMESPACE::expf;
+// Select exactly one implementation for each measurement.
+// using LIBC_NAMESPACE::expf;
+// using LIBC_NAMESPACE::math::double_eval::expf;
+// using LIBC_NAMESPACE::math::float_eval::expf;
+using LIBC_NAMESPACE::math::gpu_eval::expf;
 
 BENCH(float, ExpfSubnormal, expf, UniformExponent, -126, -126);
 BENCH(float, ExpfCoreRange, expf, UniformLinear, -10.0f, 10.0f);
