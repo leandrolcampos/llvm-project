@@ -92,7 +92,7 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &u) {
   return y;
 }
 
-// Reconstruct a subnormal result from y * 2^k in round-to-nearest mode.
+// Reconstructs a subnormal result from y * 2^k in round-to-nearest mode.
 // The caller guarantees -150 <= k <= -126 and y * 2^k < 2^-126.
 LIBC_INLINE float scale_subnormal(const FloatFloat &y, int k) {
   using FPBits = fputil::FPBits<float>;
