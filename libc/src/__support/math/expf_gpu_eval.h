@@ -42,24 +42,23 @@ LIBC_INLINE FloatFloat horner_step(float x, const FloatFloat &p,
   return {lo, hi};
 }
 
-// Approximates exp(u) with the degree-11 polynomial P(u) = 1 + u + u^2 * Q(u),
+// Approximates exp(u) with the degree-10 polynomial P(u) = 1 + u + u^2 * Q(u),
 // evaluated using Horner's scheme.
 LIBC_INLINE FloatFloat exp_eval(const FloatFloat &u) {
-  // Coefficients of u^2, ..., u^7, in {lo, hi} order.
+  // Coefficients of u^2, ..., u^6, in {lo, hi} order.
   constexpr FloatFloat COEFFS[] = {
-      {0x1p-49f, 0x1p-1f},
-      {-0x1.555558p-28f, 0x1.555556p-3f},
-      {-0x1.556236p-30f, 0x1.555556p-5f},
-      {-0x1.ddd2aep-32f, 0x1.111112p-7f},
-      {-0x1.dd73d4p-36f, 0x1.6c16c2p-10f},
-      {-0x1.ec0c88p-39f, 0x1.a01a02p-13f},
+      {-0x1.dp-46f, 0x1p-1f},
+      {-0x1.555edcp-28f, 0x1.555556p-3f},
+      {-0x1.54c28ep-30f, 0x1.555556p-5f},
+      {-0x1.b504e8p-32f, 0x1.111112p-7f},
+      {0x1.158eb2p-35f, 0x1.6c16cp-10f},
   };
 
-  // The float-only tail contributes to degrees 8 through 11 of P.
-  float tail = fputil::polyeval(u.hi, 0x1.a0199p-16f, 0x1.71de5ep-19f,
-                                0x1.28b56ep-22f, 0x1.aeb702p-26f);
+  // The float-only tail contributes to degrees 7 through 10 of P.
+  float tail = fputil::polyeval(u.hi, 0x1.a0198ep-13f, 0x1.a01c0ap-16f,
+                                0x1.72e878p-19f, 0x1.2694cap-22f);
   FloatFloat p{0.0f, tail};
-  for (int i = 5; i >= 0; --i)
+  for (int i = 4; i >= 0; --i)
     p = horner_step(u.hi, p, COEFFS[i]);
 
   // Form expm1(u.hi) before adding 1, retaining its low component.
