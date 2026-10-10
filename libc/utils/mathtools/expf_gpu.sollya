@@ -1,0 +1,42 @@
+// Generate the degree-10 mixed-precision polynomial for expf_float_utils.h.
+// Run with: sollya libc/utils/mathtools/expf_gpu.sollya
+
+prec = 165!;
+
+// Format estimates for display only.
+pretty = proc(u) {
+  return ~(floor(u * 1000) / 1000);
+};
+
+f = exp(x);
+
+// Mathematical reduction interval.
+d = [-log(2) / 2; log(2) / 2];
+
+// Float-float coefficients use 49 = 2 * 24 + 1 bits.
+p_mixed = fpminimax(f, [|2, ..., 10|],
+                   [|49, 49, 49, 49, 49, 24, 24, 24, 24|],
+                   d, relative, floating, 1 + x);
+
+pff = 1 + x;
+display = hexadecimal!;
+print("Coefficients {lo, hi}, degrees 2 through 10:");
+for i from 2 to 10 do {
+  ch = round(coeff(p_mixed, i), SG, RN);
+  cl = round(coeff(p_mixed, i) - ch, SG, RN);
+  pff = pff + (ch + cl) * x ^ i;
+  print("{", cl, ",", ch, "}");
+};
+
+print("\nPolynomial:", pff);
+
+// Approximation errors on d, excluding evaluation and reduction errors.
+display = decimal!;
+err_rel = dirtyinfnorm((pff - f) / f, d);
+print("\nRelative error (estimate):", err_rel);
+print("Relative error in bits (estimate):", pretty(-log2(err_rel)));
+print("Relative error (certified enclosure):",
+      supnorm(pff, f, d, relative, 0x1p-20));
+print("Absolute error (estimate):", dirtyinfnorm(pff - f, d));
+print("Coefficient splitting error (estimate):",
+      dirtyinfnorm(pff - p_mixed, d));
