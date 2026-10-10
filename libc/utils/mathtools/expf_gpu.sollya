@@ -1,4 +1,4 @@
-// Generate the degree-10 mixed-precision polynomial for expf_gpu_eval.h.
+// Generate the degree-10 mixed-precision polynomial for expf_float_utils.h.
 // Run with: sollya libc/utils/mathtools/expf_gpu.sollya
 
 prec = 165!;

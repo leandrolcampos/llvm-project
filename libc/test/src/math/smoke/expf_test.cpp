@@ -18,7 +18,6 @@
 #include "src/__support/FPUtil/FPBits.h"
 #include "src/__support/math/expf_double_eval.h"
 #include "src/__support/math/expf_float_eval.h"
-#include "src/__support/math/expf_gpu_eval.h"
 #include "src/__support/math/expf_integer_eval.h"
 #include "src/math/expf.h"
 #include "test/UnitTest/FPMatcher.h"
@@ -122,7 +121,7 @@ LIST_EXPF_TESTS(FloatEval, LIBC_NAMESPACE::math::float_eval::expf,
                 /*check_snan_invalid=*/false,
                 /*check_exception_and_errno=*/true, /*check_errno=*/true)
 #ifdef LIBC_TARGET_CPU_HAS_FMA_FLOAT
-LIST_EXPF_TESTS(GpuEval, LIBC_NAMESPACE::math::gpu_eval::expf,
+LIST_EXPF_TESTS(FloatEvalCrRn, LIBC_NAMESPACE::math::float_eval::cr_expf_rn,
                 /*check_snan_invalid=*/false,
                 /*check_exception_and_errno=*/false, /*check_errno=*/false)
 #endif // LIBC_TARGET_CPU_HAS_FMA_FLOAT

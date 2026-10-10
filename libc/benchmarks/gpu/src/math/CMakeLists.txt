@@ -80,7 +80,6 @@ add_benchmark(
     libc.src.__support.macros.properties.types
     libc.src.__support.math.expf_double_eval
     libc.src.__support.math.expf_float_eval
-    libc.src.__support.math.expf_gpu_eval
     libc.src.math.expf
   COMPILE_OPTIONS
     ${math_benchmark_flags}

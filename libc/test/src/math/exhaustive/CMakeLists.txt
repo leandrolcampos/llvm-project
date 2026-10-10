@@ -267,7 +267,6 @@ add_fp_unittest(
     libc.src.math.expf
     libc.src.__support.math.expf_double_eval
     libc.src.__support.math.expf_float_eval
-    libc.src.__support.math.expf_gpu_eval
     libc.src.__support.math.expf_integer_eval
     libc.src.__support.FPUtil.fp_bits
   LINK_LIBRARIES
