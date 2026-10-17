@@ -1,0 +1,44 @@
+[
+  {
+    "id": "llvm-float",
+    "provider": "llvm-libc",
+    "cmake": {
+      "LIBC_CONF_MATH_OPTIMIZATIONS": "LIBC_MATH_ASSUME_ROUND_NEAREST_ONLY | LIBC_MATH_NO_ERRNO | LIBC_MATH_NO_EXCEPT | LIBC_MATH_INTERMEDIATE_COMP_IN_FLOAT | LIBC_MATH_SKIP_ACCURATE_PASS",
+      "LIBC_COMPILE_OPTIONS_DEFAULT": "-ffp-contract=off"
+    }
+  },
+  {
+    "id": "llvm-double",
+    "provider": "llvm-libc",
+    "cmake": {
+      "LIBC_CONF_MATH_OPTIMIZATIONS": "LIBC_MATH_ASSUME_ROUND_NEAREST_ONLY | LIBC_MATH_NO_ERRNO | LIBC_MATH_NO_EXCEPT",
+      "LIBC_COMPILE_OPTIONS_DEFAULT": "-ffp-contract=off"
+    }
+  },
+  {
+    "id": "llvm-double-skip",
+    "provider": "llvm-libc",
+    "cmake": {
+      "LIBC_CONF_MATH_OPTIMIZATIONS": "LIBC_MATH_ASSUME_ROUND_NEAREST_ONLY | LIBC_MATH_NO_ERRNO | LIBC_MATH_NO_EXCEPT | LIBC_MATH_SKIP_ACCURATE_PASS",
+      "LIBC_COMPILE_OPTIONS_DEFAULT": "-ffp-contract=off"
+    }
+  },
+  {
+    "id": "llvm-cr",
+    "provider": "llvm-libc",
+    "cmake": {
+      "LIBC_CONF_MATH_OPTIMIZATIONS": "LIBC_MATH_ASSUME_ROUND_NEAREST_ONLY | LIBC_MATH_NO_ERRNO | LIBC_MATH_NO_EXCEPT | LIBC_MATH_INTERMEDIATE_COMP_IN_FLOAT",
+      "LIBC_COMPILE_OPTIONS_DEFAULT": "-ffp-contract=off"
+    }
+  },
+  {
+    "id": "nvidia-expf",
+    "provider": "libdevice",
+    "symbol": "__nv_expf"
+  },
+  {
+    "id": "nvidia-fast",
+    "provider": "libdevice",
+    "symbol": "__nv_fast_expf"
+  }
+]

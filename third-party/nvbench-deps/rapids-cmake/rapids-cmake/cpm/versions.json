@@ -1,0 +1,74 @@
+{
+  "packages": {
+    "benchmark": {
+      "version": "1.8.0",
+      "git_shallow": false,
+      "git_url": "https://github.com/google/benchmark.git",
+      "git_tag": "2dd015dfef425c866d9a43f2c67d8b52d709acb6"
+    },
+    "bs_thread_pool": {
+      "version": "4.1.0",
+      "git_shallow": false,
+      "git_url": "https://github.com/bshoshany/thread-pool.git",
+      "git_tag": "097aa718f25d44315cadb80b407144ad455ee4f9"
+    },
+    "CCCL": {
+      "version": "3.1.3",
+      "git_shallow": false,
+      "git_url": "https://github.com/NVIDIA/cccl.git",
+      "git_tag": "d69eb55e0a0f6d55ca2af4c4edb2c7055c003993"
+    },
+    "cuco": {
+      "version": "0.0.1",
+      "git_shallow": false,
+      "always_download": true,
+      "git_url": "https://github.com/NVIDIA/cuCollections.git",
+      "git_tag": "e7283ed941badd33cbffcf820bcc47a65545f07d"
+    },
+    "rapids_logger": {
+      "version": "0.2.3",
+      "git_url": "https://github.com/rapidsai/rapids-logger.git",
+      "git_tag": "4c72b598f99c8aa06af49468b3fc82f3931c6bf6"
+    },
+    "GTest": {
+      "version": "1.16.0",
+      "git_shallow": false,
+      "git_url": "https://github.com/google/googletest.git",
+      "git_tag": "6910c9d9165801d8827d628cb72eb7ea9dd538c5"
+    },
+    "nvbench": {
+      "version": "0.0",
+      "git_shallow": false,
+      "git_url": "https://github.com/NVIDIA/nvbench.git",
+      "git_tag": "b88a45f4170af4e907e69af22a55af67859d3b49"
+    },
+    "nvcomp": {
+      "version": "5.0.0.6",
+      "git_shallow": false,
+      "git_url": "https://github.com/NVIDIA/nvcomp.git",
+      "git_tag": "a6e4e64a177e07cd2e5c8c5e07bb66ffefceae84",
+      "proprietary_binary_cuda_version_mapping": {
+        "11": "11",
+        "12": "12",
+        "13": "13"
+      },
+      "proprietary_binary": {
+        "x86_64-linux": "https://developer.download.nvidia.com/compute/nvcomp/redist/nvcomp/linux-x86_64/nvcomp-linux-x86_64-${version}_cuda${cuda-toolkit-version-mapping}-archive.tar.xz",
+        "aarch64-linux": "https://developer.download.nvidia.com/compute/nvcomp/redist/nvcomp/linux-sbsa/nvcomp-linux-sbsa-${version}_cuda${cuda-toolkit-version-mapping}-archive.tar.xz"
+      }
+    },
+    "nvtx3": {
+      "version": "3.2.0",
+      "git_shallow": false,
+      "git_url": "https://github.com/NVIDIA/NVTX.git",
+      "git_tag": "69c9949150ac1c310758a304082228a36d5e4758",
+      "source_subdir": "c"
+    },
+    "rmm": {
+      "version": "${rapids-cmake-version}",
+      "git_url": "https://github.com/rapidsai/rmm.git",
+      "git_tag": "${rapids-cmake-checkout-tag}",
+      "source_subdir": "cpp"
+    }
+  }
+}

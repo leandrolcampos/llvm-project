@@ -1,0 +1,22 @@
+#=============================================================================
+# SPDX-FileCopyrightText: Copyright (c) @current_year@, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
+#=============================================================================
+
+
+# CPM Search for @name@
+#
+# Make sure we search for a build-dir config module for the CPM project
+set(possible_package_dir "@possible_dir@")
+if(possible_package_dir AND NOT DEFINED @name@_DIR)
+  set(@name@_DIR "${possible_package_dir}")
+endif()
+
+CPMFindPackage(
+  "@_RAPIDS_CPM_ARGS@"
+  )
+
+if(possible_package_dir)
+  unset(possible_package_dir)
+endif()
+#=============================================================================

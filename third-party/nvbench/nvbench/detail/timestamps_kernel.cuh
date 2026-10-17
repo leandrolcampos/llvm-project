@@ -1,0 +1,61 @@
+/*
+ *  Copyright 2025 NVIDIA Corporation
+ *
+ *  Licensed under the Apache License, Version 2.0 with the LLVM exception
+ *  (the "License"); you may not use this file except in compliance with
+ *  the License.
+ *
+ *  You may obtain a copy of the License at
+ *
+ *      http://llvm.org/foundation/relicensing/LICENSE.txt
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ */
+
+#pragma once
+
+#include <nvbench/config.cuh>
+
+#if defined(NVBENCH_IMPLICIT_SYSTEM_HEADER_GCC)
+#pragma GCC system_header
+#elif defined(NVBENCH_IMPLICIT_SYSTEM_HEADER_CLANG)
+#pragma clang system_header
+#elif defined(NVBENCH_IMPLICIT_SYSTEM_HEADER_MSVC)
+#pragma system_header
+#endif
+
+#include <nvbench/types.cuh>
+
+namespace nvbench
+{
+
+struct cuda_stream;
+
+namespace detail
+{
+
+struct timestamps_kernel
+{
+  timestamps_kernel();
+  ~timestamps_kernel();
+
+  void record(const nvbench::cuda_stream &stream);
+
+  // The device pointer refers to registered storage inside this object.
+  // Moving would leave it pointing at the moved-from object.
+  timestamps_kernel(const timestamps_kernel &)            = delete;
+  timestamps_kernel(timestamps_kernel &&)                 = delete;
+  timestamps_kernel &operator=(const timestamps_kernel &) = delete;
+  timestamps_kernel &operator=(timestamps_kernel &&)      = delete;
+
+  nvbench::uint64_t m_host_timestamps[2];
+  nvbench::uint64_t *m_device_timestamps{};
+};
+
+} // namespace detail
+
+} // namespace nvbench

@@ -1,0 +1,742 @@
+# NVBench tool for comparing performance data
+
+`nvbench-compare-robust` compares two NVBench JSON outputs and classifies matching
+benchmark states as `SAME`, `FAST`, `SLOW`, `AMBG`, or `????`.
+
+## Robust vs. Legacy Compare
+
+NVBench provides two compare entry points:
+
+- `nvbench-compare-robust` uses timing intervals, robust summaries, and optional
+  bulk sample data to make conservative `SAME`, `FAST`, `SLOW`, and `AMBG`
+  decisions.
+- `nvbench-compare-legacy` preserves the historical mean/stdev-based comparison
+  behavior. Use it for compatibility with existing workflows or when you need
+  the old decision rule.
+
+This document describes `nvbench-compare-robust`.
+
+NVBench treats benchmark performance data as describing a timing interval over
+which measured timings varied. The interval is not intended as a precise
+statistical confidence interval; it is an intuitive representation of the
+observed timing range used to decide whether two benchmark results are clearly
+separated, clearly compatible, or ambiguous.
+
+The comparison is intentionally conservative. It reports `FAST` or `SLOW` only
+when the timing intervals have a clear gap and the gap is confirmed in cycle
+space when clock information is available. Ambiguous cases stay `AMBG`
+instead of forcing a pass or regression.
+
+## Common Invocations
+
+Compare two JSON files:
+
+```bash
+nvbench-compare-robust reference.json compare.json
+```
+
+Limit the comparison to one benchmark:
+
+```bash
+nvbench-compare-robust --benchmark copy_type_sweep reference.json compare.json
+```
+
+Limit the comparison to one benchmark and one axis value:
+
+```bash
+nvbench-compare-robust \
+  --benchmark copy_type_sweep \
+  --axis T=F32 \
+  reference.json compare.json
+```
+
+Choose a table display mode. The default `intervals` mode shows timing centers
+with compact intervals and the status. `simple` shows timing centers, center
+difference, interval span over center, evidence-backed change, and status.
+`explain` adds explicit low/center/high interval endpoints and decision reason
+codes. Use `nvbench-compare-legacy` when you need the older mean/stdev
+time/noise/diff table and decision rule.
+
+```bash
+nvbench-compare-robust --display simple reference.json compare.json
+nvbench-compare-robust --display intervals reference.json compare.json
+nvbench-compare-robust --display explain reference.json compare.json
+nvbench-compare-legacy reference.json compare.json
+```
+
+Plot the comparison summary, or plot timings along a positive numeric axis. By
+default, plotting uses Matplotlib's interactive `plt.show()` behavior. Add
+`--dark` to the summary plot when it should use a dark theme:
+
+```bash
+nvbench-compare-robust --plot --dark reference.json compare.json
+nvbench-compare-robust --plot-along "Elements{io}" reference.json compare.json
+```
+
+Save plots to files when running in CI, remote shells, or scripted workflows:
+
+```bash
+nvbench-compare-robust --plot --plot-output compare.png reference.json compare.json
+nvbench-compare-robust \
+  --plot-along "Elements{io}" \
+  --plot-along-output "plots/{benchmark}-device{device}-{axis}.png" \
+  reference.json compare.json
+```
+
+When `--plot` and `--plot-along` are used together, choose one output mode for
+both plots: either omit both output options to show both plots interactively, or
+provide both `--plot-output` and `--plot-along-output` to save both plots.
+
+Generate Python code with bulk sample/frequency filenames for every displayed
+row:
+
+```bash
+nvbench-compare-robust --bulk-debug-python /path/to/output.py reference.json compare.json
+```
+
+Compare selected devices. Device filters are paired by position, so this
+compares reference device `0` against compare device `1`:
+
+```bash
+nvbench-compare-robust \
+  --reference-devices 0 \
+  --compare-devices 1 \
+  reference.json compare.json
+```
+
+Disable ANSI color codes. In this mode, status values are prefixed with emoji
+markers so copied output still carries the status category:
+
+```bash
+nvbench-compare-robust --no-color reference.json compare.json
+```
+
+Use a built-in comparison preset:
+
+```bash
+nvbench-compare-robust --preset permissive reference.json compare.json
+```
+
+Use custom settings from TOML:
+
+```bash
+nvbench-compare-robust --config compare.toml reference.json compare.json
+```
+
+Use a CLI preset as the base while preserving explicit TOML overrides:
+
+```bash
+nvbench-compare-robust --config compare.toml --preset strict reference.json compare.json
+```
+
+Print the effective default configuration:
+
+```bash
+nvbench-compare-robust --dump-config
+```
+
+Print the effective configuration for a built-in preset:
+
+```bash
+nvbench-compare-robust --preset permissive --dump-config
+```
+
+## Exit Status
+
+`nvbench-compare-robust` returns exit status `0` when the comparison completes,
+including when regressions are reported. Invocation errors, unreadable inputs,
+and invalid NVBench JSON structures return nonzero status. CI jobs that should
+fail on regressions must inspect the summary output rather than relying on the
+process exit status alone.
+
+## Matching Inputs
+
+`nvbench-compare-robust` matches benchmark states by benchmark name and by positional
+device pairing after any device filters are applied. Within each paired device
+section, states are matched by normalized state name plus their full axis-value
+tuple. Occurrence order is used only to disambiguate otherwise identical
+duplicates with the same state name and axis values.
+
+Device sections must match unless `--ignore-devices` is specified or explicit
+device filters are used:
+
+```bash
+nvbench-compare-robust \
+  --ignore-devices \
+  reference.json compare.json
+```
+
+```bash
+nvbench-compare-robust \
+  --reference-devices 0 \
+  --compare-devices 1 \
+  reference.json compare.json
+```
+
+The device filter value may be `all`, one non-negative integer device id, or a
+comma-separated list of non-negative integer ids. Filtered reference and compare
+device lists must have the same length; devices are paired by position, not by
+matching numeric id. This lets users compare differently numbered devices, such
+as reference device `0` against compare device `1`, or compare two machine
+configurations where CUDA device ids do not name the same physical GPU.
+
+For multiple selected devices, order the lists deliberately:
+
+```bash
+nvbench-compare-robust \
+  --reference-devices 0,1 \
+  --compare-devices 1,0 \
+  reference.json compare.json
+```
+
+This compares reference `0` with compare `1`, and reference `1` with compare
+`0`.
+
+Device ids may also be repeated intentionally:
+
+```bash
+nvbench-compare-robust \
+  --reference-devices 0,0 \
+  --compare-devices 0,1 \
+  reference.json compare.json
+```
+
+This compares the same reference device `0` against compare devices `0` and
+`1`. Repeated ids duplicate comparison sections by design; use them only when
+that pairing is intentional.
+
+Benchmark and axis filters follow NVBench CLI scoping:
+
+```bash
+nvbench-compare-robust -b copy_type_sweep -a T=F32 reference.json compare.json
+```
+
+For integer axes displayed with NVBench `pow2` formatting, filter by exponent
+with `NAME[pow2]=EXP`. For example, an axis value displayed as `2^20` is
+selected with:
+
+```bash
+nvbench-compare-robust -b base -a "Elements{io}[pow2]=20" reference.json compare.json
+```
+
+`-a` / `--axis` applies to the most recent `-b` / `--benchmark`, or to all
+benchmarks if it appears before any benchmark filter. If any benchmark filters
+are provided, only those benchmarks are compared; leading axis filters are
+replayed onto each selected benchmark, matching NVBench CLI behavior.
+
+## Timing Data Used
+
+For each matched state, `nvbench-compare-robust` extracts GPU timing summaries emitted
+by NVBench cold measurements:
+
+- `min`
+- `max`
+- `mean`
+- `stdev/absolute`
+- `stdev/relative`
+- `q1`
+- `median`
+- `q3`
+- `iqr/absolute`
+- `iqr/relative`
+- `sm_clock_rate/mean`
+
+When JSON output is generated with the NVBench `--jsonbin` option,
+sample-time and sample-frequency binary data are loaded lazily and used for
+bulk-data confirmation.
+
+Missing, empty, or unresolved bulk files are treated as unavailable. In that
+case, clear-gap decisions may fall back to summary `sm_clock_rate/mean`
+confirmation when those summaries are available.
+
+Bulk files that are resolved as present and non-empty, but fail lazy loading or
+validation, are treated as unusable evidence. In that case, `nvbench-compare-robust`
+does not fall back to summary clock-rate confirmation for that row and reports
+the comparison as `AMBG`.
+
+## Bulk Debug Python Output
+
+`--bulk-debug-python /path/to/output.py` writes a Python script to the specified
+file. The generated script contains a `bulk_rows` list. Each entry corresponds
+to one row that `nvbench-compare-robust` prints in its display tables after all
+benchmark, axis, device, and threshold filters are applied.
+
+This output is also useful when the built-in `--plot` or `--plot-along` views
+are too generic. The generated `bulk_rows` data and `load_bulk_data(row)` helper
+let users build custom Matplotlib, Seaborn, or notebook visualizations from the
+same paired comparison rows used by the tool.
+
+Use `stdout` instead of a file path to print the generated Python code:
+
+```bash
+nvbench-compare-robust --bulk-debug-python stdout reference.json compare.json
+```
+
+Generated bulk-debug Python is enclosed in comment markers:
+
+```python
+# NVB-BULK-BEGIN
+...
+# NVB-BULK-END
+```
+
+Because the markers are valid Python comments, the generated helpers can be
+filtered directly into the standard Python REPL. This example uses process
+substitution, which requires a shell such as Bash, Zsh, or Ksh:
+
+```bash
+python -i <(
+  nvbench-compare-robust --bulk-debug-python stdout reference.json compare.json \
+    | sed -n '/^# NVB-BULK-BEGIN$/,/^# NVB-BULK-END$/p'
+)
+```
+
+IPython does not reliably accept process-substitution paths as startup files.
+For IPython, write the generated code to a temporary file directly:
+
+```bash
+tmp=$(mktemp "${TMPDIR:-/tmp}/nvbench-bulk.XXXXXX")
+nvbench-compare-robust --bulk-debug-python "$tmp" reference.json compare.json
+ipython -i "$tmp"
+rm -f "$tmp"
+```
+
+Each `bulk_rows` entry includes:
+
+- `row_index`: zero-based index among displayed comparison rows
+- `table_row_index`: zero-based index within the displayed table for a device
+  section
+- `benchmark`
+- `reference_json` and `compare_json`
+- `reference_device_id` and `compare_device_id`
+- `state_key`
+- `occurrence` and `occurrence_count`, which disambiguate duplicate states
+- `axis_values`
+- `status`, `reason`, and `reason_message`
+- sample and frequency filenames and counts for reference and compare data
+
+The generated script also defines `load_bulk_data(row)`, which reads the
+float32 sample and frequency files for a selected row.
+
+When directory inputs are used, `bulk_rows` contains rows from all matching JSON
+file pairs. Each row records its `reference_json` and `compare_json` path, so
+custom plotting code can group rows by source file, benchmark, device, axis, or
+reason code.
+
+Select the first displayed row:
+
+```python
+row = bulk_rows[0]
+arrays = load_bulk_data(row)
+```
+
+Select the second ambiguous row:
+
+```python
+ambiguous = [row for row in bulk_rows if row["status"] == "AMBG"]
+row = ambiguous[1]
+arrays = load_bulk_data(row)
+```
+
+If `-b` and `-a` narrow the report to one comparison of interest, the desired
+entry is usually available positionally as `bulk_rows[0]`. If duplicate states
+remain after filtering, use `occurrence` to distinguish them.
+
+Plot the selected row with regular Python plotting tools:
+
+```python
+import matplotlib.pyplot as plt
+
+plt.hist(arrays["reference_samples"], alpha=0.5, label="reference")
+plt.hist(arrays["compare_samples"], alpha=0.5, label="compare")
+plt.legend()
+plt.show()
+```
+
+## Time Estimates And Intervals
+
+`nvbench-compare-robust` first tries to build a robust timing input for both
+sides. A robust input may come from JSON summaries (`min`, `median`, `q3`,
+`iqr/*`) or, when those summaries are missing, from bulk sample-time data
+generated by `--jsonbin`.
+
+When robust timing inputs are available for both sides, the comparison uses:
+
+- center: `median`
+- relative dispersion: `iqr/relative`, or `iqr/absolute` / `median`
+- interval: `[min, q3]`
+
+If robust timing inputs cannot be built for both sides, the comparison falls
+back to classical summaries:
+
+- center: `mean`
+- relative dispersion: `stdev/relative`, or `stdev/absolute` / `mean`
+- interval: `[max(min, mean - stdev), min(max, mean + stdev)]`
+
+Centers and interval endpoints must be positive and finite. States with unusable
+centers are not compared.
+
+Rows with `????` status could not form a valid timing comparison input. This
+status is emitted for skipped benchmark states, missing GPU timing summaries,
+or timing centers that are missing, non-finite, or non-positive. These rows are
+included in the total match count so data-collection issues remain visible.
+
+## Decision Tree
+
+The comparison logic starts from `AMBG` and upgrades only when enough
+evidence is available.
+
+### 1. Check For A Clear Gap
+
+The reference and compare intervals are checked for non-overlap.
+
+`FAST` is possible when the compare interval is entirely below the reference
+interval:
+
+```text
+cmp.upper < ref.lower
+(ref.lower - cmp.upper) / cmp.upper >= clear_gap.relative
+```
+
+`SLOW` is possible when the compare interval is entirely above the reference
+interval:
+
+```text
+cmp.lower > ref.upper
+(cmp.lower - ref.upper) / ref.upper >= clear_gap.relative
+```
+
+These ratios are algebraically equivalent to checking a log-scale relative gap,
+but avoid evaluating logarithms for every row.
+
+### 2. Confirm Clear Gap In Cycle Space
+
+If sample times and frequencies are available, `nvbench-compare-robust` computes:
+
+```text
+cycles = sample_time * sample_frequency
+```
+
+It then builds cycle intervals from the bulk cycle samples and requires the
+cycle interval comparison to agree with the timing interval comparison. A timing
+gap that is not confirmed by bulk cycle intervals is `AMBG`.
+
+If bulk data are missing or empty, `nvbench-compare-robust` falls back to summary
+clock-rate confirmation using `sm_clock_rate/mean`. If non-empty bulk data are
+present but fail lazy loading or validation, the clear-gap decision remains
+`AMBG` instead of falling back. If the clock-rate summary is missing or invalid,
+the clear-gap decision also remains `AMBG`.
+
+### 3. Check Bulk-Data Compatibility For SAME
+
+When there is no clear gap and bulk sample/frequency data are available,
+`nvbench-compare-robust` compares both time samples and cycle samples using symmetric
+nearest-neighbor coverage in log space.
+
+For each unique value in one run, the nearest unique value in the other run is
+found. A value is covered when the nearest-neighbor log distance is within:
+
+```text
+log(1 + same.center_relative)
+```
+
+Both directions must pass:
+
+- sample-weight coverage must be at least `bulk.sample_coverage`
+- unique-support coverage must be at least `bulk.support_coverage`
+
+Sample-weight coverage uses occurrence counts. Unique-support coverage treats
+each retained unique value equally.
+
+### 4. Fall Back To Summary SAME
+
+If bulk data are unavailable, summary data can still support `SAME` when all of
+the following are true:
+
+- both relative dispersion values are finite
+- `max(ref_noise, cmp_noise) <= same.relative_dispersion_ceiling`
+- centers are close:
+
+```text
+abs(ref.center - cmp.center) / min(ref.center, cmp.center)
+  <= same.center_relative
+```
+
+- intervals overlap strongly enough:
+
+```text
+overlap_fraction >= same.overlap_fraction
+```
+
+If `sm_clock_rate/mean` is available on both sides, the same check must also be
+confirmed in summary cycle space. If clock-rate summaries are unavailable, the
+summary timing decision can still report `SAME`.
+
+### 5. Otherwise Report AMBG
+
+If none of the clear-gap or same-result paths has enough evidence,
+`nvbench-compare-robust` reports `AMBG` and records a reason in the summary.
+
+## What To Do With AMBG Results
+
+`AMBG` does not mean a benchmark improved or regressed. It means
+`nvbench-compare-robust` did not find enough evidence to classify the result as
+`SAME`, `FAST`, or `SLOW`.
+
+Useful next steps are:
+
+- Re-run both measurements and collect JSON with bulk sample data:
+
+```bash
+./benchmark --jsonbin reference.json
+./benchmark --jsonbin compare.json
+nvbench-compare-robust reference.json compare.json
+```
+
+Here `./benchmark` is the NVBench-instrumented executable or Python script that
+uses `cuda.bench`.
+
+- Use `--display explain` to inspect the interval, noise, and decision reason
+  for each compared state.
+- Use `--bulk-debug-python /path/to/output.py` to generate Python code that
+  identifies sample and frequency files for every displayed row.
+- If cold-start effects are expected, adjust cold warmup controls such as
+  `--cold-warmup-runs` and `--cold-max-warmup-walltime`.
+- Try a different stopping criterion when the default does not collect useful
+  evidence. For example, use `--stopping-criterion entropy`, or use
+  `--stopping-criterion sample-count` with an explicit `--target-samples`
+  value.
+- After collecting stable data, use `--dump-config` as a starting point for a
+  TOML config if the default comparison thresholds are not appropriate for the
+  benchmark or machine.
+
+## Configuration
+
+Configuration files are TOML. The current format version is `1`.
+
+```toml
+version = 1
+
+[preset]
+name = "default"
+
+[clear_gap]
+relative = 0.005
+
+[same]
+center_relative = 0.005
+overlap_fraction = 0.5
+relative_dispersion_ceiling = 0.02
+
+[bulk]
+sample_coverage = 0.97
+support_coverage = 0.8
+
+[bulk.rare_support]
+sample_fraction = 0.001
+max_removed_sample_fraction = 0.01
+```
+
+The parser is strict. Unknown top-level tables, unknown keys, wrong nesting,
+unsupported versions, invalid types, non-finite values, and out-of-range values
+are rejected.
+
+TOML parsing is lazy. Python 3.11 and newer use the standard-library
+`tomllib`; Python 3.10 requires the optional `tomli` package only when
+`--config` is used.
+
+## Preset And Config Precedence
+
+Preset resolution is:
+
+1. Use `default` when neither TOML nor CLI selects a preset.
+2. Use `[preset] name = "..."` from TOML as the base preset when present.
+3. Use `--preset ...` as the base preset when present, overriding the TOML
+   preset selection.
+4. Apply explicit TOML threshold values over whichever base preset was selected.
+
+For example, with this config:
+
+```toml
+version = 1
+
+[preset]
+name = "permissive"
+
+[bulk]
+sample_coverage = 0.99
+```
+
+This command uses the `permissive` preset as the base and overrides only
+`bulk.sample_coverage`:
+
+```bash
+nvbench-compare-robust --config compare.toml reference.json compare.json
+```
+
+This command uses the `strict` preset as the base, but still overrides
+`bulk.sample_coverage` from TOML:
+
+```bash
+nvbench-compare-robust --config compare.toml --preset strict reference.json compare.json
+```
+
+## Built-In Presets
+
+Built-in presets are available through `--preset`. To inspect the exact values
+for the default configuration, run:
+
+```bash
+nvbench-compare-robust --dump-config
+```
+
+To inspect a named preset, combine `--preset` with `--dump-config`:
+
+```bash
+nvbench-compare-robust --preset strict --dump-config
+nvbench-compare-robust --preset permissive --dump-config
+```
+
+This avoids duplicating preset values in documentation and keeps the displayed
+configuration tied to the installed `nvbench-compare-robust` version.
+
+## Configuration Keys
+
+### `clear_gap.relative`
+
+Valid range: `>= 0`
+
+Minimum relative gap required before a non-overlapping timing interval can be
+classified as `FAST` or `SLOW`.
+
+### `same.center_relative`
+
+Valid range: `>= 0`
+
+Maximum relative center difference for summary `SAME` decisions. This value is
+also used as the log-space tolerance for bulk nearest-neighbor coverage:
+
+```text
+log(1 + same.center_relative)
+```
+
+### `same.overlap_fraction`
+
+Valid range: `0 <= value <= 1`
+
+Minimum interval overlap fraction required for summary `SAME` decisions. The
+overlap is measured relative to the narrower interval.
+
+### `same.relative_dispersion_ceiling`
+
+Valid range: `>= 0`
+
+Maximum allowed relative dispersion for summary `SAME` decisions.
+
+### `bulk.sample_coverage`
+
+Valid range: `0 <= value <= 1`
+
+Minimum sample-weight coverage for bulk `SAME` decisions. This check uses
+counts of repeated sample values, so common values carry more weight.
+
+### `bulk.support_coverage`
+
+Valid range: `0 <= value <= 1`
+
+Minimum unique-support coverage for bulk `SAME` decisions. This check treats
+each retained unique value equally.
+
+### `bulk.rare_support.sample_fraction`
+
+Valid range: `0 <= value <= 1`
+
+Unique values with count below:
+
+```text
+max(2, ceil(sample_fraction * total_sample_count))
+```
+
+are considered rare for support coverage.
+
+This filter only affects unique-support coverage. Sample-weight coverage always
+uses all samples.
+
+### `bulk.rare_support.max_removed_sample_fraction`
+
+Valid range: `0 <= value <= 1`
+
+Maximum sample mass that may be removed from unique-support coverage by the rare
+value filter. The filter falls back to the full unique support if filtering
+would remove more sample mass than this limit or if the count threshold would
+remove every unique value. The latter includes all-unique datasets, where
+rare-value filtering has no repeated-value support to preserve.
+
+## Other CLI Options
+
+### `--threshold-diff PERCENT`
+
+Filter displayed table rows to comparisons whose absolute center-to-center
+relative difference is at least `PERCENT`. The value is a percentage, not a
+fraction: use `--threshold-diff 5` for a 5% threshold.
+
+This option affects table output. It does not change summary counters or the
+data used by `--plot-along`.
+
+### `--plot-output PATH`
+
+Save the summary plot generated by `--plot` to `PATH` and do not call
+`plt.show()`. When this option is omitted, `--plot` keeps the default
+interactive behavior.
+
+Interactive and file-based plot output cannot be mixed in one invocation. If
+`--plot` and `--plot-along` are both requested, provide output paths for both
+plots or omit output paths for both plots.
+
+Directory comparisons can generate one summary plot per matched JSON file pair.
+When multiple summary plots resolve to the same output path, later plots are
+written to the first available sibling path using `-copy-N` before the file
+extension, such as `compare-copy-1.png`. Pre-existing files are overwritten;
+the `-copy-N` fallback is used only to avoid duplicate output paths generated
+within the same command invocation. The actual saved path and any
+disambiguation warning are written to stderr.
+
+### `--plot-along-output PATH_OR_TEMPLATE`
+
+Save plots generated by `--plot-along` to files and do not call `plt.show()`.
+Because `--plot-along` may produce one plot per benchmark/device pair, this
+option accepts filename templates with these fields:
+
+- `{benchmark}`: benchmark name
+- `{device}`: compare-device id
+- `{axis}`: selected plot axis name
+- `{pair}`: zero-based positional device-pair index
+
+Field values are sanitized before substitution so benchmark or axis names from
+input JSON cannot introduce path separators. Directory structure should be
+written literally in the template, as in `plots/{benchmark}.png`.
+
+For example:
+
+```bash
+nvbench-compare-robust \
+  --plot-along "Elements{io}" \
+  --plot-along-output "plots/{benchmark}-pair{pair}-{axis}.png" \
+  reference.json compare.json
+```
+
+A plain path without template fields is valid. If multiple plot-along figures
+resolve to the same path, later plots are written to the first available sibling
+path using `-copy-N` before the file extension, such as
+`plot-along-copy-1.png`. Pre-existing files are overwritten; the `-copy-N`
+fallback is used only to avoid duplicate output paths generated within the same
+command invocation. The actual saved path and any disambiguation warning are
+written to stderr.
+
+To avoid copy-suffixed filenames, narrow the comparison with `--benchmark`,
+`--axis`, `--reference-devices`, or `--compare-devices`, pass the JSON files of
+interest directly instead of a directory, or add more template fields such as
+`{benchmark}`, `{device}`, `{pair}`, and `{axis}`. For duplicate-heavy
+benchmarks, crowded legends, presentation-quality plots, or a different
+grouping scheme, use `--bulk-debug-python` to export the paired rows and build a
+custom visualization.

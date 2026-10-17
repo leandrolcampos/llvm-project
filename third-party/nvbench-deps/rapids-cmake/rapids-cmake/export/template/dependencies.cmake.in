@@ -1,0 +1,21 @@
+#=============================================================================
+# SPDX-FileCopyrightText: Copyright (c) @current_year@, NVIDIA CORPORATION.
+# SPDX-License-Identifier: Apache-2.0
+#=============================================================================
+
+include(CMakeFindDependencyMacro)
+
+@_RAPIDS_EXPORT_CONTENTS@
+
+foreach(target IN LISTS rapids_global_targets)
+  if(TARGET ${target})
+    get_target_property(_is_imported ${target} IMPORTED)
+    get_target_property(_already_global ${target} IMPORTED_GLOBAL)
+    if(_is_imported AND NOT _already_global)
+        set_target_properties(${target} PROPERTIES IMPORTED_GLOBAL TRUE)
+    endif()
+  endif()
+endforeach()
+
+unset(rapids_global_targets)
+unset(rapids_clear_cpm_cache)

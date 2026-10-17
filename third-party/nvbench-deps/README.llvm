@@ -1,0 +1,13 @@
+Private gpu-libm-bench dependencies. Updated by ../update_nvbench.sh.
+
+NVBench a7fe2f3d47980a48a21dac5d407dd8eff007dfc4 (Apache-2.0 WITH LLVM-exception)
+RAPIDS CMake v25.12.00 (Apache-2.0)
+fmt 12.2.0 (MIT)
+nlohmann/json v3.12.0 (MIT)
+CPM.cmake v0.42.0 (MIT, license embedded in CPM.cmake)
+
+Upstream sources are retained for the build; tests and unrelated tooling are
+omitted. ../nvbench-local.patch prevents an embedded NVBench from replacing
+the enclosing project's compile_commands.json with a symlink. No math code or
+timing implementation is patched. All fetching happens in the update script;
+runner/CMakeLists.txt directs upstream dependency lookups to local sources.

@@ -1,0 +1,321 @@
+/*
+ *  Copyright 2021 NVIDIA Corporation
+ *
+ *  Licensed under the Apache License, Version 2.0 with the LLVM exception
+ *  (the "License"); you may not use this file except in compliance with
+ *  the License.
+ *
+ *  You may obtain a copy of the License at
+ *
+ *      http://llvm.org/foundation/relicensing/LICENSE.txt
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ */
+
+#pragma once
+
+#include <nvbench/config.cuh>
+
+#if defined(NVBENCH_IMPLICIT_SYSTEM_HEADER_GCC)
+#pragma GCC system_header
+#elif defined(NVBENCH_IMPLICIT_SYSTEM_HEADER_CLANG)
+#pragma clang system_header
+#elif defined(NVBENCH_IMPLICIT_SYSTEM_HEADER_MSVC)
+#pragma system_header
+#endif
+
+#include <nvbench/blocking_kernel.cuh>
+#include <nvbench/cpu_timer.cuh>
+#include <nvbench/cuda_call.cuh>
+#include <nvbench/cuda_timer.cuh>
+#include <nvbench/detail/gpu_frequency.cuh>
+#include <nvbench/detail/kernel_launcher_timer_wrapper.cuh>
+#include <nvbench/detail/l2flush.cuh>
+#include <nvbench/detail/measure_cold_launch_timer_core.cuh>
+#include <nvbench/detail/statistics.cuh>
+#include <nvbench/device_info.cuh>
+#include <nvbench/exec_tag.cuh>
+#include <nvbench/launch.cuh>
+#include <nvbench/stopping_criterion.cuh>
+#include <nvbench/types.cuh>
+
+#include <cuda_profiler_api.h>
+#include <cuda_runtime.h>
+
+#include <optional>
+#include <utility>
+#include <vector>
+
+namespace nvbench
+{
+
+struct printer_base;
+struct state;
+
+namespace detail
+{
+
+// non-templated code goes here:
+struct measure_cold_base
+{
+  explicit measure_cold_base(nvbench::state &exec_state);
+  measure_cold_base(const measure_cold_base &)            = delete;
+  measure_cold_base(measure_cold_base &&)                 = delete;
+  measure_cold_base &operator=(const measure_cold_base &) = delete;
+  measure_cold_base &operator=(measure_cold_base &&)      = delete;
+
+protected:
+  struct kernel_launch_timer;
+  friend struct kernel_launch_timer;
+
+  void check();
+  void initialize();
+  void run_trials_prologue();
+  void record_measurements();
+  bool is_finished();
+  void run_trials_epilogue();
+  void generate_summaries();
+  void gpu_frequency_start() { m_gpu_frequency.start(m_launch.get_stream()); }
+  void gpu_frequency_stop() { m_gpu_frequency.stop(m_launch.get_stream()); }
+
+  void check_skip_time(nvbench::float64_t warmup_time);
+
+  __forceinline__ void flush_device_l2() { m_l2flush.flush(m_launch.get_stream()); }
+
+  __forceinline__ cudaError_t sync_stream_noexcept() const noexcept
+  {
+    return cudaStreamSynchronize(m_launch.get_stream());
+  }
+  __forceinline__ void sync_stream() const { NVBENCH_CUDA_CALL(this->sync_stream_noexcept()); }
+  __forceinline__ void profiler_start() const { NVBENCH_CUDA_CALL(cudaProfilerStart()); }
+  __forceinline__ cudaError_t profiler_stop_noexcept() const noexcept { return cudaProfilerStop(); }
+  __forceinline__ void profiler_stop() const { NVBENCH_CUDA_CALL(this->profiler_stop_noexcept()); }
+  void block_stream();
+  __forceinline__ void unblock_stream() { m_blocker.unblock(); }
+  __forceinline__ void unblock_stream_noexcept() noexcept { m_blocker.unblock_noexcept(); }
+
+private:
+  void log_timeout_warnings(nvbench::printer_base &printer,
+                            std::optional<nvbench::float64_t> cuda_stdev_noise = std::nullopt);
+
+protected:
+  nvbench::state &m_state;
+
+  nvbench::launch m_launch;
+  nvbench::cuda_timer m_cuda_timer{};
+  nvbench::cpu_timer m_cpu_timer{};
+  nvbench::cpu_timer m_walltime_timer{};
+  nvbench::detail::l2flush m_l2flush{};
+  nvbench::blocking_kernel m_blocker{};
+
+  nvbench::criterion_params m_criterion_params{};
+  nvbench::stopping_criterion_base &m_stopping_criterion;
+  nvbench::detail::gpu_frequency m_gpu_frequency{};
+
+  bool m_disable_blocking_kernel{false};
+  bool m_run_once{false};
+  bool m_check_throttling{true};
+
+  nvbench::int64_t m_min_samples{};
+  nvbench::int64_t m_cold_warmup_runs{1};
+
+  nvbench::float64_t m_cold_max_warmup_walltime{};
+  nvbench::float64_t m_skip_time{};
+  nvbench::float64_t m_timeout{};
+
+  nvbench::float32_t m_throttle_threshold{};      // [% of default SM clock rate]
+  nvbench::float32_t m_throttle_recovery_delay{}; // [seconds]
+
+  // Dynamically increased when repeated throttling occurs
+  // without successfully recording a sample.
+  nvbench::float32_t m_dynamic_throttle_recovery_delay{}; // [seconds]
+  nvbench::int64_t m_throttle_discard_count{};
+
+  nvbench::int64_t m_total_samples{};
+
+  nvbench::float64_t m_min_cuda_time{};
+  nvbench::float64_t m_max_cuda_time{};
+  nvbench::float64_t m_total_cuda_time{};
+
+  nvbench::float64_t m_min_cpu_time{};
+  nvbench::float64_t m_max_cpu_time{};
+  nvbench::float64_t m_total_cpu_time{};
+
+  nvbench::float64_t m_sm_clock_rate_accumulator{};
+  std::vector<nvbench::float64_t> m_sm_clock_rates{};
+
+  std::vector<nvbench::float64_t> m_cuda_times{};
+  std::vector<nvbench::float64_t> m_cpu_times{};
+
+  bool m_max_time_exceeded{false};
+};
+
+struct measure_cold_base::kernel_launch_timer
+{
+  kernel_launch_timer(measure_cold_base &measure)
+      : kernel_launch_timer{measure,
+                            measure.m_disable_blocking_kernel,
+                            measure.m_run_once,
+                            measure.m_check_throttling}
+  {}
+
+  explicit kernel_launch_timer(measure_cold_base &measure, bool disable_blocking_kernel)
+      : kernel_launch_timer{measure,
+                            disable_blocking_kernel,
+                            measure.m_run_once,
+                            measure.m_check_throttling}
+  {}
+
+  explicit kernel_launch_timer(measure_cold_base &measure,
+                               bool disable_blocking_kernel,
+                               bool run_once,
+                               bool check_throttling)
+      : m_measure{measure}
+      , m_core{*this, {disable_blocking_kernel, run_once, check_throttling}}
+  {}
+
+  kernel_launch_timer(const kernel_launch_timer &)            = delete;
+  kernel_launch_timer(kernel_launch_timer &&)                 = delete;
+  kernel_launch_timer &operator=(const kernel_launch_timer &) = delete;
+  kernel_launch_timer &operator=(kernel_launch_timer &&)      = delete;
+
+  ~kernel_launch_timer() noexcept = default;
+
+  __forceinline__ void start() { m_core.start(); }
+
+  __forceinline__ void stop() { m_core.stop(); }
+
+  __forceinline__ void flush_device_l2() { m_measure.flush_device_l2(); }
+
+  __forceinline__ void sync_stream() { m_measure.sync_stream(); }
+
+  __forceinline__ cudaError_t sync_stream_noexcept() const noexcept
+  {
+    return m_measure.sync_stream_noexcept();
+  }
+
+  __forceinline__ void cpu_timer_start() noexcept { m_measure.m_cpu_timer.start(); }
+
+  __forceinline__ void cpu_timer_stop() noexcept { m_measure.m_cpu_timer.stop(); }
+
+  __forceinline__ void cpu_timer_stop_noexcept() noexcept { this->cpu_timer_stop(); }
+
+  __forceinline__ void block_stream() { m_measure.block_stream(); }
+
+  __forceinline__ void unblock_stream() { m_measure.unblock_stream(); }
+
+  __forceinline__ void unblock_stream_noexcept() noexcept { m_measure.unblock_stream_noexcept(); }
+
+  __forceinline__ void gpu_frequency_start() { m_measure.gpu_frequency_start(); }
+
+  __forceinline__ void gpu_frequency_stop() { m_measure.gpu_frequency_stop(); }
+
+  __forceinline__ void profiler_start() { m_measure.profiler_start(); }
+
+  __forceinline__ void profiler_stop() { m_measure.profiler_stop(); }
+
+  __forceinline__ cudaError_t profiler_stop_noexcept() const noexcept
+  {
+    return m_measure.profiler_stop_noexcept();
+  }
+
+  __forceinline__ void cuda_timer_start()
+  {
+    m_measure.m_cuda_timer.start(m_measure.m_launch.get_stream());
+  }
+
+  __forceinline__ void cuda_timer_stop()
+  {
+    m_measure.m_cuda_timer.stop(m_measure.m_launch.get_stream());
+  }
+
+private:
+  measure_cold_base &m_measure;
+  nvbench::detail::measure_cold_launch_timer_core<kernel_launch_timer> m_core;
+};
+
+template <typename KernelLauncher>
+struct measure_cold : public measure_cold_base
+{
+  measure_cold(nvbench::state &state, KernelLauncher &kernel_launcher)
+      : measure_cold_base(state)
+      , m_kernel_launcher{kernel_launcher}
+  {}
+
+  void operator()()
+  {
+    this->check();
+    this->initialize();
+    this->run_warmup();
+
+    this->run_trials_prologue();
+    this->run_trials();
+    this->run_trials_epilogue();
+
+    this->generate_summaries();
+  }
+
+private:
+  // Run the kernel m_cold_warmup_runs times, measuring the GPU time of the last run.
+  // If under skip_time, skip the measurement.
+  void run_warmup()
+  {
+    if (m_run_once)
+    { // Skip warmups
+      return;
+    }
+
+    // Ensure blocking kernel is loaded during the warmup
+    // Ref: https://github.com/NVIDIA/nvbench/issues/339
+    this->block_stream();
+    this->unblock_stream();
+
+    // disable use of blocking kernel for warm-up run
+    // see https://github.com/NVIDIA/nvbench/issues/240
+    constexpr bool disable_blocking_kernel = true;
+    kernel_launch_timer timer(*this, disable_blocking_kernel);
+    nvbench::cpu_timer warmup_walltime_timer;
+
+    warmup_walltime_timer.start();
+    for (nvbench::int64_t warmup_run = 0; warmup_run < m_cold_warmup_runs; ++warmup_run)
+    {
+      this->launch_kernel(timer);
+      warmup_walltime_timer.stop();
+
+      if (m_cold_max_warmup_walltime > 0. &&
+          warmup_walltime_timer.get_duration() > m_cold_max_warmup_walltime)
+      {
+        break;
+      }
+    }
+    this->check_skip_time(m_cuda_timer.get_duration());
+  }
+
+  void run_trials()
+  {
+    // do not use blocking kernel if benchmark is only run once, e.g., when profiling
+    // ref: https://github.com/NVIDIA/nvbench/issue/242
+    const bool disable_blocking_kernel = m_run_once || m_disable_blocking_kernel;
+    kernel_launch_timer timer(*this, disable_blocking_kernel);
+    do
+    {
+      this->launch_kernel(timer);
+      this->record_measurements();
+    } while (!this->is_finished());
+  }
+
+  template <typename TimerT>
+  __forceinline__ void launch_kernel(TimerT &timer)
+  {
+    m_kernel_launcher(m_launch, timer);
+  }
+
+  KernelLauncher &m_kernel_launcher;
+};
+
+} // namespace detail
+} // namespace nvbench

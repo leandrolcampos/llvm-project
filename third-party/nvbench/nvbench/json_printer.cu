@@ -1,0 +1,682 @@
+/*
+ *  Copyright 2021 NVIDIA Corporation
+ *
+ *  Licensed under the Apache License, Version 2.0 with the LLVM exception
+ *  (the "License"); you may not use this file except in compliance with
+ *  the License.
+ *
+ *  You may obtain a copy of the License at
+ *
+ *      http://llvm.org/foundation/relicensing/LICENSE.txt
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ */
+
+#include <nvbench/axes_metadata.cuh>
+#include <nvbench/benchmark_base.cuh>
+#include <nvbench/config.cuh>
+#include <nvbench/detail/throw.cuh>
+#include <nvbench/device_info.cuh>
+#include <nvbench/device_manager.cuh>
+#include <nvbench/git_revision.cuh>
+#include <nvbench/json_printer.cuh>
+#include <nvbench/state.cuh>
+#include <nvbench/summary.cuh>
+#include <nvbench/version.cuh>
+
+#include <nlohmann/json.hpp>
+
+#include <fmt/format.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <exception>
+#include <fstream>
+#include <ios>
+#include <iterator>
+#include <ostream>
+#include <stdexcept>
+#include <string>
+#include <system_error>
+#include <type_traits>
+#include <utility>
+#include <vector>
+
+#if __has_include(<filesystem>)
+#include <filesystem>
+namespace fs = std::filesystem;
+#elif __has_include(<experimental/filesystem>)
+#include <experimental/filesystem>
+namespace fs = std::experimental::filesystem;
+#else
+#error "No <filesystem> or <experimental/filesystem> found."
+#endif
+
+#if NVBENCH_CPP_DIALECT >= 2020
+#include <bit>
+#endif
+
+namespace
+{
+
+#if NVBENCH_CPP_DIALECT >= 2020
+constexpr bool is_little_endian() noexcept { return std::endian::native == std::endian::little; }
+#else
+bool is_little_endian() noexcept
+{
+  const nvbench::uint32_t word = {0xBadDecaf};
+  nvbench::uint8_t bytes[4];
+  std::memcpy(bytes, &word, 4);
+  return bytes[0] == 0xaf;
+}
+#endif
+
+template <typename JsonNode>
+void write_named_values(JsonNode &node, const nvbench::named_values &values)
+{
+  const auto value_names = values.get_names();
+  for (const auto &value_name : value_names)
+  {
+    auto &value   = node.emplace_back();
+    value["name"] = value_name;
+
+    const auto type = values.get_type(value_name);
+    switch (type)
+    {
+      case nvbench::named_values::type::int64:
+        value["type"] = "int64";
+        // Write as a string; JSON encodes all numbers as double-precision
+        // floats, which would truncate int64s.
+        value["value"] = fmt::to_string(values.get_int64(value_name));
+        break;
+
+      case nvbench::named_values::type::float64:
+        value["type"] = "float64";
+        // Write as a string for consistency with int64.
+        value["value"] = fmt::to_string(values.get_float64(value_name));
+        break;
+
+      case nvbench::named_values::type::string:
+        value["type"]  = "string";
+        value["value"] = values.get_string(value_name);
+        break;
+
+      default:
+        NVBENCH_THROW(std::runtime_error, "{}", "Unrecognized value type.");
+    } // end switch (value type)
+  } // end foreach value name
+}
+
+// choose buffer to be block size of modern SSD
+// see: https://github.com/NVIDIA/nvbench/issues/255
+static constexpr std::size_t preferred_buffer_nbytes = 4096;
+
+struct jsonbin_directory_paths
+{
+  // Files are written next to the JSON output, but summaries record paths
+  // relative to the JSON file's directory so the output remains relocatable.
+  fs::path write_path;
+  fs::path summary_path;
+};
+
+struct jsonbin_sidecar_metadata
+{
+  const char *directory_suffix;
+  const char *summary_tag_prefix;
+  const char *summary_name;
+  const char *summary_hint;
+  const char *summary_description;
+};
+
+jsonbin_directory_paths make_jsonbin_directory_paths(const std::string &stream_name,
+                                                     const std::string &suffix)
+{
+  const fs::path stream_path{stream_name};
+  const fs::path sidecar_dir{stream_path.filename().string() + suffix};
+  const auto stream_parent = stream_path.parent_path();
+  return {stream_parent.empty() ? sidecar_dir : stream_parent / sidecar_dir, sidecar_dir};
+}
+
+void ensure_output_directory(const fs::path &dir)
+{
+  std::error_code create_ec;
+  fs::create_directories(dir, create_ec);
+
+  std::error_code status_ec;
+  const auto status = fs::status(dir, status_ec);
+  if (status_ec)
+  {
+    NVBENCH_THROW(std::runtime_error,
+                  "Failed to inspect result directory '{}': {}.",
+                  dir.string(),
+                  status_ec.message());
+  }
+  if (fs::is_directory(status))
+  {
+    return;
+  }
+  if (fs::exists(status))
+  {
+    NVBENCH_THROW(std::runtime_error, "'{}' exists and is not a directory.", dir.string());
+  }
+
+  if (create_ec)
+  {
+    NVBENCH_THROW(std::runtime_error,
+                  "Failed to create result directory '{}': {}.",
+                  dir.string(),
+                  create_ec.message());
+  }
+
+  NVBENCH_THROW(std::runtime_error, "Failed to create result directory '{}'.", dir.string());
+}
+
+template <std::size_t N, std::size_t... Is>
+void swap_bytes_impl(char *p, std::index_sequence<Is...>)
+{
+  ((std::swap(p[Is], p[N - 1 - Is])), ...);
+}
+
+template <std::size_t WordSize>
+void big_endian_to_little_endian(char *word)
+{
+  if constexpr (WordSize > 1)
+  {
+    static_assert((WordSize & (WordSize - 1)) == 0, "WordSize must be a power of two");
+    swap_bytes_impl<WordSize>(word, std::make_index_sequence<WordSize / 2>{});
+  }
+}
+
+template <typename StorageT, std::size_t buffer_nbytes = preferred_buffer_nbytes>
+void write_out_values_as(std::ofstream &out, const std::vector<nvbench::float64_t> &data)
+{
+  static_assert(std::is_floating_point_v<StorageT>);
+  static_assert(std::is_convertible_v<nvbench::float64_t, StorageT>);
+
+  static constexpr std::size_t value_nbytes = sizeof(StorageT);
+  static_assert(buffer_nbytes % value_nbytes == 0);
+
+  alignas(alignof(StorageT)) char buffer[buffer_nbytes];
+  std::size_t bytes_in_buffer = 0;
+
+  for (auto value64 : data)
+  {
+    const auto value     = static_cast<StorageT>(value64);
+    auto value_subbuffer = &buffer[bytes_in_buffer];
+    std::memcpy(value_subbuffer, &value, value_nbytes);
+
+    // the c++17 implementation of is_little_endian isn't constexpr, but
+    // all supported compilers optimize this branch as if it were.
+    if (!is_little_endian())
+    {
+      big_endian_to_little_endian<value_nbytes>(value_subbuffer);
+    }
+    bytes_in_buffer += value_nbytes;
+
+    // if buffer is full, write it out and wrap around
+    if (bytes_in_buffer == buffer_nbytes)
+    {
+      out.write(buffer, static_cast<std::streamsize>(buffer_nbytes));
+      bytes_in_buffer = 0;
+    }
+  } // end of foreach value64 in data
+
+  if (bytes_in_buffer)
+  {
+    out.write(buffer, static_cast<std::streamsize>(bytes_in_buffer));
+    bytes_in_buffer = 0;
+  }
+}
+
+// save data using statically downcasting to float32 format
+template <std::size_t buffer_nbytes = preferred_buffer_nbytes>
+void write_out_values_as_float32(std::ofstream &out, const std::vector<nvbench::float64_t> &data)
+{
+  write_out_values_as<nvbench::float32_t, buffer_nbytes>(out, data);
+}
+
+// save data using float64 format
+template <std::size_t buffer_nbytes = preferred_buffer_nbytes>
+void write_out_values_as_float64(std::ofstream &out, const std::vector<nvbench::float64_t> &data)
+{
+  write_out_values_as<nvbench::float64_t, buffer_nbytes>(out, data);
+}
+
+void write_jsonbin_sidecar(nvbench::state &state,
+                           const std::string &stream_name,
+                           std::size_t &file_count,
+                           const std::string &tag,
+                           const std::string &hint,
+                           const std::vector<nvbench::float64_t> &data,
+                           const jsonbin_sidecar_metadata &metadata)
+{
+  nvbench::cpu_timer timer;
+  timer.start();
+
+  auto paths         = make_jsonbin_directory_paths(stream_name, metadata.directory_suffix);
+  const auto file_id = file_count++;
+  const fs::path filename{fmt::format("{:d}.bin", file_id)};
+  paths.write_path /= filename;
+  paths.summary_path /= filename;
+
+  bool write_succeeded = false;
+  auto log_if_present  = [&state](nvbench::log_level level, const std::string &msg) {
+    if (auto printer_ptr = state.get_benchmark().get_printer())
+    {
+      printer_ptr->log(level, msg);
+    }
+  };
+
+  try
+  {
+    ensure_output_directory(paths.write_path.parent_path());
+
+    std::ofstream out;
+    out.exceptions(out.exceptions() | std::ios::failbit | std::ios::badbit);
+    out.open(paths.write_path, std::ios::binary | std::ios::out);
+
+    write_out_values_as_float32(out, data);
+    out.close();
+    write_succeeded = true;
+  }
+  catch (std::exception &e)
+  {
+    {
+      // Best-effort cleanup of any partial output. Preserve the original
+      // write failure as the diagnostic if removal also fails.
+      std::error_code remove_ec;
+      fs::remove(paths.write_path, remove_ec);
+    }
+
+    log_if_present(nvbench::log_level::warn,
+                   fmt::format("Error writing {} ({}) to {}: {}",
+                               tag,
+                               hint,
+                               paths.write_path.string(),
+                               e.what()));
+  } // end catch
+
+  auto &summ = state.add_summary(fmt::format("{}:{}", metadata.summary_tag_prefix, tag));
+  summ.set_string("name", metadata.summary_name);
+  summ.set_string("hint", metadata.summary_hint);
+  summ.set_string("description", metadata.summary_description);
+  if (write_succeeded)
+  {
+    summ.set_string("filename", paths.summary_path.string());
+    summ.set_int64("size", static_cast<nvbench::int64_t>(data.size()));
+  }
+  summ.set_string("hide", "Not needed in table.");
+
+  timer.stop();
+  if (write_succeeded)
+  {
+    log_if_present(nvbench::log_level::info,
+                   fmt::format("Wrote '{}' in {:>6.3f}ms",
+                               paths.write_path.string(),
+                               timer.get_duration() * 1000));
+  }
+}
+
+} // end namespace
+
+namespace nvbench
+{
+
+json_printer::version_t json_printer::get_json_file_version()
+{
+  // This version number should stay in sync with `file_version` in
+  // python/scripts/nvbench_json/version.py.
+  //
+  // Use semantic versioning:
+  // Major version: backwards incompatible changes
+  // Minor version: backwards compatible additions
+  // Patch version: backwards compatible bugfixes/patches
+  return {1, 0, 0};
+}
+
+std::string json_printer::version_t::get_string() const
+{
+  return fmt::format("{}.{}.{}", this->major, this->minor, this->patch);
+}
+
+void json_printer::do_process_bulk_data_float64(state &state,
+                                                const std::string &tag,
+                                                const std::string &hint,
+                                                const std::vector<nvbench::float64_t> &data)
+{
+  printer_base::do_process_bulk_data_float64(state, tag, hint, data);
+
+  if (!m_enable_binary_output)
+  {
+    return;
+  }
+
+  if (hint == "sample_times")
+  {
+    constexpr jsonbin_sidecar_metadata metadata{"-bin",
+                                                "nv/json/bin",
+                                                "Sample Times File",
+                                                "file/sample_times",
+                                                "Binary file containing sample times as "
+                                                "little-endian float32."};
+
+    write_jsonbin_sidecar(state, m_stream_name, m_num_jsonbin_files, tag, hint, data, metadata);
+  } // end hint == sample_times
+
+  if (hint == "sample_freqs")
+  {
+    constexpr jsonbin_sidecar_metadata metadata{"-freqs-bin",
+                                                "nv/json/freqs-bin",
+                                                "Sample Frequencies File",
+                                                "file/sample_freqs",
+                                                "Binary file containing sample frequencies as "
+                                                "little-endian float32."};
+
+    write_jsonbin_sidecar(state, m_stream_name, m_num_jsonbin_freq_files, tag, hint, data, metadata);
+  } // end hint == sample_freqs
+}
+
+namespace
+{
+
+void add_devices_section(nlohmann::ordered_json &root)
+{
+  auto &devices = root["devices"];
+  for (const auto &dev_info : nvbench::device_manager::get().get_devices())
+  {
+    auto &device                                = devices.emplace_back();
+    device["id"]                                = dev_info.get_id();
+    device["name"]                              = dev_info.get_name();
+    device["sm_version"]                        = dev_info.get_sm_version();
+    device["ptx_version"]                       = dev_info.get_ptx_version();
+    device["sm_default_clock_rate"]             = dev_info.get_sm_default_clock_rate();
+    device["number_of_sms"]                     = dev_info.get_number_of_sms();
+    device["max_blocks_per_sm"]                 = dev_info.get_max_blocks_per_sm();
+    device["max_threads_per_sm"]                = dev_info.get_max_threads_per_sm();
+    device["max_threads_per_block"]             = dev_info.get_max_threads_per_block();
+    device["registers_per_sm"]                  = dev_info.get_registers_per_sm();
+    device["registers_per_block"]               = dev_info.get_registers_per_block();
+    device["global_memory_size"]                = dev_info.get_global_memory_size();
+    device["global_memory_bus_peak_clock_rate"] = dev_info.get_global_memory_bus_peak_clock_rate();
+    device["global_memory_bus_width"]           = dev_info.get_global_memory_bus_width();
+    device["global_memory_bus_bandwidth"]       = dev_info.get_global_memory_bus_bandwidth();
+    device["l2_cache_size"]                     = dev_info.get_l2_cache_size();
+    device["shared_memory_per_sm"]              = dev_info.get_shared_memory_per_sm();
+    device["shared_memory_per_block"]           = dev_info.get_shared_memory_per_block();
+    device["ecc_state"]                         = dev_info.get_ecc_state();
+  }
+}
+
+void add_argv_array(nlohmann::ordered_json &metadata,
+                    const char *key,
+                    const std::vector<std::string> &args)
+{
+  auto &argv = metadata[key];
+  for (const auto &arg : args)
+  {
+    argv.push_back(arg);
+  }
+}
+
+} // namespace
+
+void json_printer::do_print_benchmark_results(const benchmark_vector &benches)
+{
+  nlohmann::ordered_json root;
+
+  {
+    auto &metadata = root["meta"];
+
+    add_argv_array(metadata, "argv", this->get_argv());
+    add_argv_array(metadata, "raw_argv", this->get_raw_argv());
+
+    {
+      auto &version = metadata["version"];
+
+      {
+        const auto version_info = json_printer::get_json_file_version();
+        auto &json_version      = version["json"];
+
+        json_version["major"]  = version_info.major;
+        json_version["minor"]  = version_info.minor;
+        json_version["patch"]  = version_info.patch;
+        json_version["string"] = version_info.get_string();
+      } // "json"
+
+      {
+        auto &nvb_version = version["nvbench"];
+
+        nvb_version["major"]  = NVBENCH_VERSION_MAJOR;
+        nvb_version["minor"]  = NVBENCH_VERSION_MINOR;
+        nvb_version["patch"]  = NVBENCH_VERSION_PATCH;
+        nvb_version["string"] = fmt::format("{}.{}.{}",
+                                            NVBENCH_VERSION_MAJOR,
+                                            NVBENCH_VERSION_MINOR,
+                                            NVBENCH_VERSION_PATCH);
+
+        nvb_version["git_branch"]  = NVBENCH_GIT_BRANCH;
+        nvb_version["git_sha"]     = NVBENCH_GIT_SHA1;
+        nvb_version["git_version"] = NVBENCH_GIT_VERSION;
+        nvb_version["git_is_dirty"] =
+#ifdef NVBENCH_GIT_IS_DIRTY
+          true;
+#else
+          false;
+#endif
+      } // "nvbench"
+    } // "version"
+  } // "meta"
+
+  add_devices_section(root);
+
+  {
+    auto &benchmarks = root["benchmarks"];
+    for (const auto &bench_ptr : benches)
+    {
+      const auto bench_index = benchmarks.size();
+      auto &bench            = benchmarks.emplace_back();
+
+      bench["name"]  = bench_ptr->get_name();
+      bench["index"] = bench_index;
+
+      bench["min_samples"]              = bench_ptr->get_min_samples();
+      bench["cold_warmup_runs"]         = bench_ptr->get_cold_warmup_runs();
+      bench["cold_max_warmup_walltime"] = bench_ptr->get_cold_max_warmup_walltime();
+      bench["batch_target_time"]        = bench_ptr->get_batch_target_time();
+      bench["skip_time"]                = bench_ptr->get_skip_time();
+      bench["timeout"]                  = bench_ptr->get_timeout();
+
+      auto &devices = bench["devices"];
+      for (const auto &dev_info : bench_ptr->get_devices())
+      {
+        devices.push_back(dev_info.get_id());
+      }
+
+      auto &axes = bench["axes"];
+      for (const auto &axis_ptr : bench_ptr->get_axes().get_axes())
+      {
+        auto &axis = axes.emplace_back();
+
+        axis["name"]  = axis_ptr->get_name();
+        axis["type"]  = axis_ptr->get_type_as_string();
+        axis["flags"] = axis_ptr->get_flags_as_string();
+
+        auto &values         = axis["values"];
+        const auto axis_size = axis_ptr->get_size();
+        for (std::size_t i = 0; i < axis_size; ++i)
+        {
+          auto &value           = values.emplace_back();
+          value["input_string"] = axis_ptr->get_input_string(i);
+          value["description"]  = axis_ptr->get_description(i);
+
+          switch (axis_ptr->get_type())
+          {
+            case nvbench::axis_type::type:
+              value["is_active"] = static_cast<type_axis &>(*axis_ptr).get_is_active(i);
+              break;
+
+            case nvbench::axis_type::int64:
+              value["value"] = static_cast<int64_axis &>(*axis_ptr).get_value(i);
+              break;
+
+            case nvbench::axis_type::float64:
+              value["value"] = static_cast<float64_axis &>(*axis_ptr).get_value(i);
+              break;
+
+            case nvbench::axis_type::string:
+              value["value"] = static_cast<string_axis &>(*axis_ptr).get_value(i);
+              break;
+            default:
+              break;
+          } // end switch (axis type)
+        } // end foreach axis value
+      } // end foreach axis
+
+      auto &states = bench["states"];
+      for (const auto &exec_state : bench_ptr->get_states())
+      {
+        auto &st = states.emplace_back();
+
+        st["name"] = exec_state.get_axis_values_as_string();
+
+        st["min_samples"]              = exec_state.get_min_samples();
+        st["cold_warmup_runs"]         = exec_state.get_cold_warmup_runs();
+        st["cold_max_warmup_walltime"] = exec_state.get_cold_max_warmup_walltime();
+        st["batch_target_time"]        = exec_state.get_batch_target_time();
+        st["skip_time"]                = exec_state.get_skip_time();
+        st["timeout"]                  = exec_state.get_timeout();
+
+        st["device"]            = exec_state.get_device()->get_id();
+        st["type_config_index"] = exec_state.get_type_config_index();
+
+        // TODO I'd like to replace this with:
+        //  [ {"name" : <axis name>, "index": <value_index>}, ...]
+        // but it would take some refactoring in the data structures to get
+        // that information through.
+        ::write_named_values(st["axis_values"], exec_state.get_axis_values());
+
+        auto &summaries = st["summaries"];
+        for (const auto &exec_summ : exec_state.get_summaries())
+        {
+          auto &summ  = summaries.emplace_back();
+          summ["tag"] = exec_summ.get_tag();
+
+          // Write out the expected values as simple key/value pairs
+          nvbench::named_values summary_values = exec_summ;
+          if (summary_values.has_value("name"))
+          {
+            summ["name"] = summary_values.get_string("name");
+            summary_values.remove_value("name");
+          }
+          if (summary_values.has_value("description"))
+          {
+            summ["description"] = summary_values.get_string("description");
+            summary_values.remove_value("description");
+          }
+          if (summary_values.has_value("hint"))
+          {
+            summ["hint"] = summary_values.get_string("hint");
+            summary_values.remove_value("hint");
+          }
+          if (summary_values.has_value("hide"))
+          {
+            summ["hide"] = summary_values.get_string("hide");
+            summary_values.remove_value("hide");
+          }
+
+          // Write any additional values generically in
+          // ["data"] = [{name,type,value}, ...]:
+          if (summary_values.get_size() != 0)
+          {
+            ::write_named_values(summ["data"], summary_values);
+          }
+        }
+
+        st["is_skipped"] = exec_state.is_skipped();
+        if (exec_state.is_skipped())
+        {
+          st["skip_reason"] = exec_state.get_skip_reason();
+          continue;
+        }
+      } // end foreach exec_state
+    } // end foreach benchmark
+  } // "benchmarks"
+
+  m_ostream << root.dump(2) << "\n";
+}
+
+void json_printer::do_print_benchmark_list(const benchmark_vector &benches)
+{
+  if (benches.empty())
+  {
+    return;
+  }
+
+  nlohmann::ordered_json root;
+  auto &benchmarks = root["benchmarks"];
+
+  for (const auto &bench_ptr : benches)
+  {
+    const auto bench_index = benchmarks.size();
+    auto &bench            = benchmarks.emplace_back();
+
+    bench["name"]  = bench_ptr->get_name();
+    bench["index"] = bench_index;
+
+    // We have to ensure that the axes are represented as an array, not an
+    // nil object when there are no axes.
+    auto &axes = bench["axes"] = nlohmann::json::array();
+
+    for (const auto &axis_ptr : bench_ptr->get_axes().get_axes())
+    {
+      auto &axis = axes.emplace_back();
+
+      axis["name"]  = axis_ptr->get_name();
+      axis["type"]  = axis_ptr->get_type_as_string();
+      axis["flags"] = axis_ptr->get_flags_as_string();
+
+      auto &values         = axis["values"];
+      const auto axis_size = axis_ptr->get_size();
+      for (std::size_t i = 0; i < axis_size; ++i)
+      {
+        auto &value           = values.emplace_back();
+        value["input_string"] = axis_ptr->get_input_string(i);
+        value["description"]  = axis_ptr->get_description(i);
+
+        switch (axis_ptr->get_type())
+        {
+          case nvbench::axis_type::int64:
+            value["value"] = static_cast<int64_axis &>(*axis_ptr).get_value(i);
+            break;
+
+          case nvbench::axis_type::float64:
+            value["value"] = static_cast<float64_axis &>(*axis_ptr).get_value(i);
+            break;
+
+          case nvbench::axis_type::string:
+            value["value"] = static_cast<string_axis &>(*axis_ptr).get_value(i);
+            break;
+
+          default:
+            break;
+        } // end switch (axis type)
+      } // end foreach axis value
+    }
+  } // end foreach bench
+
+  m_ostream << root.dump(2) << "\n";
+}
+
+void json_printer::print_devices_json()
+{
+  nlohmann::ordered_json root;
+  add_devices_section(root);
+  m_ostream << root.dump(2) << "\n";
+}
+
+} // namespace nvbench
