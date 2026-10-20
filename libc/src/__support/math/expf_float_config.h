@@ -31,7 +31,8 @@
 #error "Unsupported table size for expf"
 #endif
 
-// Maximum number of table entries stored in constant memory on GPUs.
+// Maximum number of entries a table can have to be stored in GPU constant
+// memory space.
 #ifndef LIBC_MATH_EXPF_CONSTANT_TABLE_THRESHOLD
 #define LIBC_MATH_EXPF_CONSTANT_TABLE_THRESHOLD 2
 #endif
