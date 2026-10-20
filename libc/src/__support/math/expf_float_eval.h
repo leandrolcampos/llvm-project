@@ -14,6 +14,7 @@
 #ifndef LLVM_LIBC_SRC___SUPPORT_MATH_EXPF_FLOAT_EVAL_H
 #define LLVM_LIBC_SRC___SUPPORT_MATH_EXPF_FLOAT_EVAL_H
 
+#include "src/__support/CPP/bit.h"
 #include "src/__support/FPUtil/FEnvImpl.h"
 #include "src/__support/FPUtil/FPBits.h"
 #include "src/__support/FPUtil/double_double.h"
@@ -170,16 +171,23 @@ LIBC_INLINE float cr_expf_rn(float x) {
       LOG_2_LO_HI / N,
   };
 
-  float nf = fputil::nearest_integer(x_safe * LOG2_E_N);
-  int k = static_cast<int>(nf);
+  float n = fputil::nearest_integer(x_safe * LOG2_E_N);
+  int k = static_cast<int>(n);
 
 #ifndef LIBC_MATH_EXPF_USES_NO_TABLE
-  unsigned j = static_cast<unsigned>(k) & 1U;
-  k >>= 1;
+  // N is a power of two, so its trailing zero count equals log2(N).
+  constexpr int LOG2_N = cpp::countr_zero(static_cast<unsigned>(N));
+
+  // Keeping only the low LOG2_N bits computes j = n - N * floor(n / N).
+  // These are the bits discarded by the right shift below.
+  unsigned j = static_cast<unsigned>(k) & static_cast<unsigned>(N - 1);
+
+  // Discarding the low bits while preserving the sign computes floor(n / N).
+  k >>= LOG2_N;
 #endif
 
-  float r_hi = fputil::multiply_add(-nf, LOG_2_INV_N_HI, x_safe);
-  fputil::FloatFloat r_lo = fputil::quick_mult(-nf, LOG_2_INV_N_LO);
+  float r_hi = fputil::multiply_add(-n, LOG_2_INV_N_HI, x_safe);
+  fputil::FloatFloat r_lo = fputil::quick_mult(-n, LOG_2_INV_N_LO);
 
   fputil::FloatFloat r = fputil::exact_add(r_hi, r_lo.hi);
   r.lo += r_lo.lo;

@@ -34,7 +34,7 @@
 // Maximum number of entries a table can have to be stored in GPU constant
 // memory space.
 #ifndef LIBC_MATH_EXPF_CONSTANT_TABLE_THRESHOLD
-#define LIBC_MATH_EXPF_CONSTANT_TABLE_THRESHOLD 2
+#define LIBC_MATH_EXPF_CONSTANT_TABLE_THRESHOLD 4
 #endif
 
 #if defined(LIBC_TARGET_ARCH_IS_GPU) &&                                        \
