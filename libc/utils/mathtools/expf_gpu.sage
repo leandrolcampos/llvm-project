@@ -1,5 +1,7 @@
 # Print float-float lookup table entries for 2^(i / table_size) in {lo, hi} order.
 # Run with: sage libc/utils/mathtools/expf_gpu.sage -- --table-size 2
+# With --rounding-bit, the low bit of hi stores a residual sign and must be
+# cleared before hi is used in arithmetic.
 
 import argparse
 import sys
@@ -109,12 +111,40 @@ def generate_lookup_table(func, *, num_entries, **split_kwargs):
     )
 
 
+def split_with_rounding_bit(x, *, work_prec=200):
+    R = RealField(24)
+    H = RealField(23)
+
+    def split_at(p):
+        residual = x.n(prec=p)
+        hi = R(H(residual))
+        residual -= hi.exact_rational()
+        lo = R(residual)
+        residual -= lo.exact_rational()
+
+        # Rounding hi to 23 bits leaves its low significand bit free. Set it
+        # when the exact table value exceeds the sum of the decoded words.
+        if residual > 0:
+            hi = hi.nextabove()
+        return hi, lo
+
+    result = split_at(work_prec)
+    if result != split_at(2 * work_prec):
+        raise ValueError("split is not stable; increase work_prec")
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Print float-float lookup table entries in {lo, hi} order."
     )
     parser.add_argument(
         "--table-size", type=int, default=2, help="number of entries (default: 2)"
+    )
+    parser.add_argument(
+        "--rounding-bit",
+        action="store_true",
+        help="encode a residual sign in the low bit of a 23-bit high word",
     )
     # Sage may leave the separator used to forward script arguments in sys.argv.
     argv = sys.argv[1:]
@@ -124,9 +154,15 @@ def main():
     if args.table_size < 1:
         parser.error("--table-size must be at least 1")
 
-    table = generate_lookup_table(
-        lambda x: ZZ(2)**x, num_entries=args.table_size, num_words=2, prec=24
-    )
+    if args.rounding_bit:
+        table = tuple(
+            split_with_rounding_bit(ZZ(2)**(QQ(i) / args.table_size))
+            for i in range(args.table_size)
+        )
+    else:
+        table = generate_lookup_table(
+            lambda x: ZZ(2)**x, num_entries=args.table_size, num_words=2, prec=24
+        )
 
     for hi, lo in table:
         print("    {" + get_hex(lo) + ", " + get_hex(hi) + "},")
