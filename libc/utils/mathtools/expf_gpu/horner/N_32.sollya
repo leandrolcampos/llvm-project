@@ -21,7 +21,12 @@ d = [-log(2) / 64; 1.2 * log(2) / 64];
 // Degrees 3 through 5 use float coefficients.
 p_mixed = fpminimax(f, [|2, ..., 5|],
                    [|49, 24, 24, 24|],
-                   d, relative, floating, 1 + x);
+                   d, absolute, floating, 1 + x);
+
+// Adjust the quadratic coefficient for the reconstruction that incorporates
+// the table's low word through table_entry.lo * exp_r_hi. This adjustment was
+// selected empirically by exhaustive testing of the complete implementation.
+p_mixed = p_mixed + 0x1p-36 * x^2;
 
 pff = 1 + x;
 display = hexadecimal!;

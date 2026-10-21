@@ -298,11 +298,11 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
 LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
                                 const FloatFloat &table_entry) {
   // Coefficient of r^3, in {lo, hi} order.
-  constexpr FloatFloat COEFF = {-0x1.555202p-28f, 0x1.555556p-3f};
+  constexpr FloatFloat COEFF = {-0x1.5b79fep-28f, 0x1.555556p-3f};
 
   // The float-only tail contributes to degrees 4 through 6 of P.
   float tail =
-      fputil::polyeval(r.hi, 0x1.555554p-5f, 0x1.1111c4p-7f, 0x1.6d90c2p-10f);
+      fputil::polyeval(r.hi, 0x1.55554cp-5f, 0x1.11126cp-7f, 0x1.76f4ep-10f);
   FloatFloat poly = horner_step(r.hi, tail, COEFF);
   poly = horner_step(r.hi, poly, 0.5f);
   poly = horner_step(r.hi, poly, 1.0f);
@@ -319,13 +319,12 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
   table_product.lo =
       fputil::multiply_add(table_entry.hi, expm1_r_lo, table_product.lo);
   float product_corr =
-      fputil::multiply_add(table_entry.lo, expm1_r_hi.hi, table_product.lo);
+      fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  // Add the table's low word before the smaller product correction. Retain
-  // the residual of the final low sum for the round-to-odd adjustment.
-  FloatFloat lo_sum =
-      fputil::exact_add(exp_u.lo + table_entry.lo, product_corr);
+  // product_corr includes the table's low word through table_entry.lo *
+  // exp_r_hi. Retain the final low sum's residual for round-to-odd.
+  FloatFloat lo_sum = fputil::exact_add(exp_u.lo, product_corr);
 
   uint32_t lo_sum_bits = fputil::FPBits<float>(lo_sum.hi).uintval();
   bool should_round_to_odd =
@@ -351,11 +350,11 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
 LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
                                 const FloatFloat &table_entry) {
   // Coefficient of r^2, in {lo, hi} order.
-  constexpr FloatFloat COEFF = {-0x1.682cp-35f, 0x1p-1f};
+  constexpr FloatFloat COEFF = {-0x1.e068p-36f, 0x1p-1f};
 
   // The float-only tail contributes to degrees 3 through 5 of P.
   float tail =
-      fputil::polyeval(r.hi, 0x1.555556p-3f, 0x1.555692p-5f, 0x1.0fb844p-7f);
+      fputil::polyeval(r.hi, 0x1.555556p-3f, 0x1.555696p-5f, 0x1.0fb762p-7f);
   FloatFloat poly = horner_step(r.hi, tail, COEFF);
   poly = horner_step(r.hi, poly, 1.0f);
 
@@ -371,13 +370,12 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
   table_product.lo =
       fputil::multiply_add(table_entry.hi, expm1_r_lo, table_product.lo);
   float product_corr =
-      fputil::multiply_add(table_entry.lo, expm1_r_hi.hi, table_product.lo);
+      fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  // Add the table's low word before the smaller product correction. Retain
-  // the residual of the final low sum for the round-to-odd adjustment.
-  FloatFloat lo_sum =
-      fputil::exact_add(exp_u.lo + table_entry.lo, product_corr);
+  // product_corr includes the table's low word through table_entry.lo *
+  // exp_r_hi. Retain the final low sum's residual for round-to-odd.
+  FloatFloat lo_sum = fputil::exact_add(exp_u.lo, product_corr);
 
   uint32_t lo_sum_bits = fputil::FPBits<float>(lo_sum.hi).uintval();
   bool should_round_to_odd =
