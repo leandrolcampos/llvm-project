@@ -1,0 +1,43 @@
+// Generate the degree-4 Horner polynomial for expf_float_horner.h with N = 128.
+// N is the number of lookup table entries.
+// Run with: sollya libc/utils/mathtools/expf_gpu/horner/N_128.sollya
+
+prec = 165!;
+
+// Format estimates for display only.
+pretty = proc(u) {
+  return ~(floor(u * 1000) / 1000);
+};
+
+f = exp(x);
+
+d = [-log(2) / 256; log(2) / 256];
+
+// All coefficients use float precision. Fix the constant and linear terms
+// to 1 and the cubic coefficient to two floats above round(1/6, SG, RN).
+// This cubic coefficient was selected empirically by exhaustive testing.
+p_mixed = fpminimax(f, [|2, 4|],
+                   [|24, 24|],
+                   d, relative, floating, 1 + x + 0x1.55555ap-3 * x^3);
+
+pff = 1 + x;
+display = hexadecimal!;
+print("Float coefficients, degrees 2 through 4:");
+for i from 2 to 4 do {
+  ch = round(coeff(p_mixed, i), SG, RN);
+  pff = pff + ch * x ^ i;
+  print(ch);
+};
+
+print("\nPolynomial:", pff);
+
+// Approximation errors on d, excluding evaluation and reduction errors.
+display = decimal!;
+err_rel = dirtyinfnorm((pff - f) / f, d);
+print("\nRelative error (estimate):", err_rel);
+print("Relative error in bits (estimate):", pretty(-log2(err_rel)));
+print("Relative error (certified enclosure):",
+      supnorm(pff, f, d, relative, 0x1p-20));
+print("Absolute error (estimate):", dirtyinfnorm(pff - f, d));
+print("Coefficient rounding error (estimate):",
+      dirtyinfnorm(pff - p_mixed, d));
