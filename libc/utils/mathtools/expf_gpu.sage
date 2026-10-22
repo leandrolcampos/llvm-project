@@ -2,6 +2,8 @@
 # Run with: sage libc/utils/mathtools/expf_gpu.sage -- --table-size 2
 # With --rounding-bit, the low bit of hi stores a residual sign and must be
 # cleared before hi is used in arithmetic.
+# With --hi-rounding downward, round hi toward -infinity before splitting
+# the remainder.
 
 import argparse
 import sys
@@ -64,7 +66,7 @@ def get_default_work_prec(prec):
     return work_precs.get(prec, 4 * prec)
 
 
-def split(x, *, num_words, prec, work_prec=None):
+def split(x, *, num_words, prec, work_prec=None, hi_rounding="RNDN"):
     if num_words < 1:
         raise ValueError("num_words must be at least 1")
 
@@ -75,13 +77,14 @@ def split(x, *, num_words, prec, work_prec=None):
         raise ValueError("work_prec must be at least prec")
 
     R = RealField(prec)
+    H = RealField(prec, rnd=hi_rounding)
 
     def split_at(p):
         residual = x.n(prec=p)
         words = []
 
         for _ in range(num_words):
-            word = R(residual)
+            word = R(H(residual)) if not words else R(residual)
             words.append(word)
             residual -= word.exact_rational()
 
@@ -146,6 +149,12 @@ def main():
         action="store_true",
         help="encode a residual sign in the low bit of a 23-bit high word",
     )
+    parser.add_argument(
+        "--hi-rounding",
+        choices=("nearest", "downward"),
+        default="nearest",
+        help="rounding mode for the high word (default: nearest)",
+    )
     # Sage may leave the separator used to forward script arguments in sys.argv.
     argv = sys.argv[1:]
     if argv[:1] == ["--"]:
@@ -153,6 +162,8 @@ def main():
     args = parser.parse_args(argv)
     if args.table_size < 1:
         parser.error("--table-size must be at least 1")
+    if args.rounding_bit and args.hi_rounding != "nearest":
+        parser.error("--rounding-bit requires --hi-rounding nearest")
 
     if args.rounding_bit:
         table = tuple(
@@ -161,7 +172,11 @@ def main():
         )
     else:
         table = generate_lookup_table(
-            lambda x: ZZ(2)**x, num_entries=args.table_size, num_words=2, prec=24
+            lambda x: ZZ(2)**x,
+            num_entries=args.table_size,
+            num_words=2,
+            prec=24,
+            hi_rounding="RNDD" if args.hi_rounding == "downward" else "RNDN",
         )
 
     for hi, lo in table:
