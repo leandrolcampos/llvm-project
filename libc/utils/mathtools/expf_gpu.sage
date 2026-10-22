@@ -4,6 +4,7 @@
 # cleared before hi is used in arithmetic.
 # With --hi-rounding downward, round hi toward -infinity before splitting
 # the remainder.
+# With --lo-rounding upward, round the low word toward +infinity.
 
 import argparse
 import sys
@@ -66,7 +67,9 @@ def get_default_work_prec(prec):
     return work_precs.get(prec, 4 * prec)
 
 
-def split(x, *, num_words, prec, work_prec=None, hi_rounding="RNDN"):
+def split(
+    x, *, num_words, prec, work_prec=None, hi_rounding="RNDN", lo_rounding="RNDN"
+):
     if num_words < 1:
         raise ValueError("num_words must be at least 1")
 
@@ -78,17 +81,19 @@ def split(x, *, num_words, prec, work_prec=None, hi_rounding="RNDN"):
 
     R = RealField(prec)
     H = RealField(prec, rnd=hi_rounding)
+    L = RealField(prec, rnd=lo_rounding)
 
     def split_at(p):
         residual = x.n(prec=p)
         words = []
 
         for _ in range(num_words):
-            word = R(H(residual)) if not words else R(residual)
+            word = R(H(residual)) if not words else R(L(residual))
             words.append(word)
             residual -= word.exact_rational()
 
-        if num_words > 1:
+        # Keep directed low-word rounding unchanged at boundaries.
+        if num_words > 1 and lo_rounding == "RNDN":
             last_word = words[-1]
             at_boundary = abs(last_word) == words[-2].ulp() / 2
             if residual != 0 and (at_boundary or last_word == 0):
@@ -155,6 +160,12 @@ def main():
         default="nearest",
         help="rounding mode for the high word (default: nearest)",
     )
+    parser.add_argument(
+        "--lo-rounding",
+        choices=("nearest", "upward"),
+        default="nearest",
+        help="rounding mode for the low word (default: nearest)",
+    )
     # Sage may leave the separator used to forward script arguments in sys.argv.
     argv = sys.argv[1:]
     if argv[:1] == ["--"]:
@@ -162,8 +173,12 @@ def main():
     args = parser.parse_args(argv)
     if args.table_size < 1:
         parser.error("--table-size must be at least 1")
-    if args.rounding_bit and args.hi_rounding != "nearest":
-        parser.error("--rounding-bit requires --hi-rounding nearest")
+    if args.rounding_bit and (
+        args.hi_rounding != "nearest" or args.lo_rounding != "nearest"
+    ):
+        parser.error(
+            "--rounding-bit requires both word rounding modes to be nearest"
+        )
 
     if args.rounding_bit:
         table = tuple(
@@ -177,6 +192,7 @@ def main():
             num_words=2,
             prec=24,
             hi_rounding="RNDD" if args.hi_rounding == "downward" else "RNDN",
+            lo_rounding="RNDU" if args.lo_rounding == "upward" else "RNDN",
         )
 
     for hi, lo in table:
