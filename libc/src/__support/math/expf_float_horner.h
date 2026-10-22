@@ -74,14 +74,18 @@ LIBC_ALWAYS_INLINE FloatFloat horner_step(float x, float poly, float coeff) {
 // uses u instead of r and exp_u.hi for the approximation to e^(u.hi).
 //
 // Using the lookup table value T, reconstruct e^u as T + T * expm1(r).
-// Depending on the variant, the table's low word is either added separately
-// before the smaller product correction, or included in product_corr through
-// table_entry.lo * exp_r_hi.
+// Depending on the variant, corr includes a contribution from either:
+// - table_entry.lo * expm1_r_hi.hi, with the standalone table_entry.lo
+//   added to exp_u.lo before combining with corr; or
+// - table_entry.lo * exp_r_hi, which approximately accounts for both
+//   table_entry.lo and table_entry.lo * expm1(r.hi).
 //
-// Rounding the final low sum to nearest can create a midpoint for the final
-// addition to exp_u.hi. Retain the low sum's residual and round inexact low
-// sums to odd when their rounded value is a power of two, preserving which
-// side of the midpoint the unrounded low sum lies on.
+// Rounding the low sum to nearest can create a midpoint for the final
+// addition exp_u.hi + lo_sum.hi.
+//
+// Round inexact low sums to odd whenever their rounded value is a power of
+// two. This covers all such midpoint cases in these evaluations and preserves
+// which side of the midpoint the exact low sum lies on.
 
 #ifdef LIBC_MATH_EXPF_USES_NO_TABLE
 
@@ -115,8 +119,6 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &u) {
 
   float corr = fputil::multiply_add(u.lo, exp_u.hi, expm1_u_hi.lo);
 
-  // The power-of-two check covers all such midpoint cases in this evaluation.
-  //
   // FastTwoSum here is exact in RN: for nonzero corr, exp_u.lo is an integer
   // multiple of ulp(corr), as required by Theorem 1 of "FastTwoSum revisited".
   FloatFloat lo_sum = fputil::exact_add(exp_u.lo, corr);
@@ -167,12 +169,11 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
   FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_r_hi.hi);
   table_product.lo =
       fputil::multiply_add(table_entry.hi, expm1_r_lo, table_product.lo);
-  float product_corr =
+  float corr =
       fputil::multiply_add(table_entry.lo, expm1_r_hi.hi, table_product.lo);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  FloatFloat lo_sum =
-      fputil::exact_add(exp_u.lo + table_entry.lo, product_corr);
+  FloatFloat lo_sum = fputil::exact_add(exp_u.lo + table_entry.lo, corr);
 
   uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum.hi).uintval();
   bool should_round_to_odd =
@@ -218,12 +219,11 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
   FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_r_hi.hi);
   table_product.lo =
       fputil::multiply_add(table_entry.hi, expm1_r_lo, table_product.lo);
-  float product_corr =
+  float corr =
       fputil::multiply_add(table_entry.lo, expm1_r_hi.hi, table_product.lo);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  FloatFloat lo_sum =
-      fputil::exact_add(exp_u.lo + table_entry.lo, product_corr);
+  FloatFloat lo_sum = fputil::exact_add(exp_u.lo + table_entry.lo, corr);
 
   uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum.hi).uintval();
   bool should_round_to_odd =
@@ -265,12 +265,11 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
   FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_r_hi.hi);
   table_product.lo =
       fputil::multiply_add(table_entry.hi, expm1_r_lo, table_product.lo);
-  float product_corr =
+  float corr =
       fputil::multiply_add(table_entry.lo, expm1_r_hi.hi, table_product.lo);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  FloatFloat lo_sum =
-      fputil::exact_add(exp_u.lo + table_entry.lo, product_corr);
+  FloatFloat lo_sum = fputil::exact_add(exp_u.lo + table_entry.lo, corr);
 
   uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum.hi).uintval();
   bool should_round_to_odd =
@@ -312,11 +311,10 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
   FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_r_hi.hi);
   table_product.lo =
       fputil::multiply_add(table_entry.hi, expm1_r_lo, table_product.lo);
-  float product_corr =
-      fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
+  float corr = fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  FloatFloat lo_sum = fputil::exact_add(exp_u.lo, product_corr);
+  FloatFloat lo_sum = fputil::exact_add(exp_u.lo, corr);
 
   uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum.hi).uintval();
   bool should_round_to_odd =
@@ -357,11 +355,10 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
   FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_r_hi.hi);
   table_product.lo =
       fputil::multiply_add(table_entry.hi, expm1_r_lo, table_product.lo);
-  float product_corr =
-      fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
+  float corr = fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  FloatFloat lo_sum = fputil::exact_add(exp_u.lo, product_corr);
+  FloatFloat lo_sum = fputil::exact_add(exp_u.lo, corr);
 
   uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum.hi).uintval();
   bool should_round_to_odd =
@@ -398,11 +395,10 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
   FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_r_hi.hi);
   table_product.lo =
       fputil::multiply_add(table_entry.hi, expm1_r_lo, table_product.lo);
-  float product_corr =
-      fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
+  float corr = fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  FloatFloat lo_sum = fputil::exact_add(exp_u.lo, product_corr);
+  FloatFloat lo_sum = fputil::exact_add(exp_u.lo, corr);
 
   uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum.hi).uintval();
   bool should_round_to_odd =
@@ -438,11 +434,10 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
   FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_r_hi.hi);
   table_product.lo =
       fputil::multiply_add(table_entry.hi, expm1_r_lo, table_product.lo);
-  float product_corr =
-      fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
+  float corr = fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  FloatFloat lo_sum = fputil::exact_add(exp_u.lo, product_corr);
+  FloatFloat lo_sum = fputil::exact_add(exp_u.lo, corr);
 
   uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum.hi).uintval();
   bool should_round_to_odd =
@@ -487,11 +482,10 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
   FloatFloat table_product = fputil::exact_mult(table_hi, expm1_r_hi.hi);
   table_product.lo =
       fputil::multiply_add(table_hi, expm1_r_lo, table_product.lo);
-  float product_corr =
-      fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
+  float corr = fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
   FloatFloat exp_u = fputil::exact_add(table_hi, table_product.hi);
 
-  FloatFloat lo_sum = fputil::exact_add(exp_u.lo, product_corr);
+  FloatFloat lo_sum = fputil::exact_add(exp_u.lo, corr);
 
   // Use the table's residual sign to break a tie when the computed low
   // residual is zero. A zero table low word identifies the exact entry 0.
@@ -536,12 +530,11 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
   FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_r_hi.hi);
   table_product.lo =
       fputil::multiply_add(table_entry.hi, expm1_r_lo, table_product.lo);
-  float product_corr =
+  float corr =
       fputil::multiply_add(table_entry.lo, expm1_r_hi.hi, table_product.lo);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  FloatFloat lo_sum =
-      fputil::exact_add(exp_u.lo + table_entry.lo, product_corr);
+  FloatFloat lo_sum = fputil::exact_add(exp_u.lo + table_entry.lo, corr);
 
   uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum.hi).uintval();
   bool should_round_to_odd =
@@ -580,11 +573,10 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
   FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_r_hi.hi);
   table_product.lo =
       fputil::multiply_add(table_entry.hi, expm1_r_lo, table_product.lo);
-  float product_corr =
-      fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
+  float corr = fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  FloatFloat lo_sum = fputil::exact_add(exp_u.lo, product_corr);
+  FloatFloat lo_sum = fputil::exact_add(exp_u.lo, corr);
 
   uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum.hi).uintval();
   bool should_round_to_odd =
