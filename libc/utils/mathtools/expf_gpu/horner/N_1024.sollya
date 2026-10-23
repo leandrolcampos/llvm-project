@@ -4,7 +4,6 @@
 
 prec = 256!;
 
-// Format estimates for display only.
 pretty = proc(u) {
   return ~(floor(u * 1000) / 1000);
 };
@@ -12,13 +11,15 @@ pretty = proc(u) {
 f = exp(x);
 d = [-log(2) / 2048; log(2) / 2048];
 
-// Only the quadratic coefficient needs FloatFloat precision.
-p_mixed = fpminimax(f, [|2, 3|], [|48, SG|], d, relative, floating, 1 + x);
+// The quadratic float-float coefficient uses 48 = 2 * 24 bits.
+// Fix the constant and linear coefficients to 1; the cubic coefficient uses
+// float precision.
+pf = fpminimax(f, [|2, 3|], [|48, SG|], d, relative, floating, 1 + x);
 
 display = hexadecimal!;
-c2_hi = round(coeff(p_mixed, 2), SG, RN);
-c2_lo = round(coeff(p_mixed, 2) - c2_hi, SG, RN);
-c3 = round(coeff(p_mixed, 3), SG, RN);
+c2_hi = round(coeff(pf, 2), SG, RN);
+c2_lo = round(coeff(pf, 2) - c2_hi, SG, RN);
+c3 = round(coeff(pf, 3), SG, RN);
 print("FloatFloat coefficient, degree 2, in {lo, hi} order:");
 print("{", c2_lo, ",", c2_hi, "}");
 print("\nFloat coefficient, degree 3:");
@@ -27,7 +28,8 @@ print(c3);
 pff = 1 + x + (c2_hi + c2_lo) * x^2 + c3 * x^3;
 print("\nPolynomial:", pff);
 
-// Approximation errors on d, excluding evaluation and reduction errors.
+// Approximation errors on d, excluding errors from floating-point polynomial
+// evaluation and range reduction.
 display = decimal!;
 err_rel = dirtyinfnorm((pff - f) / f, d);
 print("\nRelative error (estimate):", err_rel);
@@ -36,4 +38,4 @@ print("Relative error (certified enclosure):",
       supnorm(pff, f, d, relative, 0x1p-20));
 print("Absolute error (estimate):", dirtyinfnorm(pff - f, d));
 print("Coefficient rounding error (estimate):",
-      dirtyinfnorm(pff - p_mixed, d));
+      dirtyinfnorm(pff - pf, d));

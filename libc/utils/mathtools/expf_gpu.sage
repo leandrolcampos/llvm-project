@@ -83,8 +83,8 @@ def split(
     """Split x into additive words or a main word and a relative correction.
 
     Words are returned from high to low. With a rounding bit, decode the
-    penultimate word before reconstruction; the bit indicates whether x is
-    greater than the reconstructed value (1) or not (0).
+    penultimate word before reconstruction: its last bit indicates whether x
+    is greater than the reconstructed value (1) or not (0).
     """
     integer_types = (int, Integer)
 

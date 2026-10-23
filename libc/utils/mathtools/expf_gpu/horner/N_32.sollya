@@ -4,43 +4,42 @@
 
 prec = 165!;
 
-// Format estimates for display only.
 pretty = proc(u) {
   return ~(floor(u * 1000) / 1000);
 };
 
 f = exp(x);
 
-// Nominal reduction interval: [-log(2) / 64, log(2) / 64].
-// Widen the approximation interval by 20% on the positive side. This was
-// selected empirically by exhaustive testing; factors 0.9, 0.95, 0.99,
-// 1.001, 1.01, 1.05, 1.1 and 1.2 were tested on either endpoint.
+// The nominal reduction interval is widened by 20% on the positive side.
+// The factor 1.2 was selected during an adaptive search that included scaling
+// either endpoint by 0.9, 0.95, 0.99, 1.001, 1.01, 1.05, 1.1, and 1.2.
 d = [-log(2) / 64; 1.2 * log(2) / 64];
 
-// The degree-2 float-float coefficient uses 49 = 2 * 24 + 1 bits.
+// The quadratic float-float coefficient uses 49 = 2 * 24 + 1 bits.
 // Degrees 3 through 5 use float coefficients.
-p_mixed = fpminimax(f, [|2, ..., 5|],
-                   [|49, 24, 24, 24|],
-                   d, absolute, floating, 1 + x);
+// The quadratic adjustment below was selected during an adaptive search.
+pf = fpminimax(f, [|2, ..., 5|],
+               [|49, 24, 24, 24|],
+               d, absolute, floating, 1 + x);
 
-// Adjust the quadratic coefficient for the reconstruction that incorporates
-// the table's low word through table_entry.lo * exp_r_hi. This adjustment was
-// selected empirically by exhaustive testing of the complete implementation.
-p_mixed = p_mixed + 0x1p-36 * x^2;
+// Apply the selected +2^-36 adjustment to the quadratic coefficient for the
+// reconstruction using table_entry.lo * exp_r_hi.
+pf = pf + 0x1p-36 * x^2;
 
 pff = 1 + x;
 display = hexadecimal!;
 print("Coefficients {lo, hi}, degrees 2 through 5:");
 for i from 2 to 5 do {
-  ch = round(coeff(p_mixed, i), SG, RN);
-  cl = round(coeff(p_mixed, i) - ch, SG, RN);
+  ch = round(coeff(pf, i), SG, RN);
+  cl = round(coeff(pf, i) - ch, SG, RN);
   pff = pff + (ch + cl) * x ^ i;
   print("{", cl, ",", ch, "}");
 };
 
 print("\nPolynomial:", pff);
 
-// Approximation errors on d, excluding evaluation and reduction errors.
+// Approximation errors on d, excluding errors from floating-point polynomial
+// evaluation and range reduction.
 display = decimal!;
 err_rel = dirtyinfnorm((pff - f) / f, d);
 print("\nRelative error (estimate):", err_rel);
@@ -49,4 +48,4 @@ print("Relative error (certified enclosure):",
       supnorm(pff, f, d, relative, 0x1p-20));
 print("Absolute error (estimate):", dirtyinfnorm(pff - f, d));
 print("Coefficient splitting error (estimate):",
-      dirtyinfnorm(pff - p_mixed, d));
+      dirtyinfnorm(pff - pf, d));

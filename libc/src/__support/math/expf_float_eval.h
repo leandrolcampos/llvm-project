@@ -178,7 +178,7 @@ LIBC_INLINE float cr_expf_rn(float x) {
   // N is a power of two, so its trailing zero count equals log2(N).
   constexpr int LOG2_N = cpp::countr_zero(static_cast<unsigned>(N));
 
-  // Keeping only the low LOG2_N bits computes j = n - N * floor(n / N).
+  // Keeping only the low LOG2_N bits of k computes j = n - N * floor(n / N).
   // These are the bits discarded by the right shift below.
   unsigned j = static_cast<unsigned>(k) & static_cast<unsigned>(N - 1);
 
