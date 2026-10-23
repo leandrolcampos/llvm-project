@@ -1,0 +1,43 @@
+// Generate the degree-9 Horner polynomial for expf_float_horner.h with N = 2.
+// N is the number of lookup table entries.
+// Run with: sollya libc/utils/mathtools/expf_gpu/horner/N_2.sollya
+
+prec = 165!;
+
+pretty = proc(u) {
+  return ~(floor(u * 1000) / 1000);
+};
+
+f = exp(x);
+
+d = [-log(2) / 4; log(2) / 4];
+
+// Float-float coefficients (degrees 3 through 5) use 49 = 2 * 24 + 1 bits.
+// The quadratic coefficient is 1/2; degrees 6 through 9 use float coefficients.
+pf = fpminimax(f, [|2, ..., 9|],
+               [|24, 49, 49, 49, 24, 24, 24, 24|],
+               d, relative, floating, 1 + x);
+
+pff = 1 + x;
+display = hexadecimal!;
+print("Coefficients {lo, hi}, degrees 2 through 9:");
+for i from 2 to 9 do {
+  ch = round(coeff(pf, i), SG, RN);
+  cl = round(coeff(pf, i) - ch, SG, RN);
+  pff = pff + (ch + cl) * x ^ i;
+  print("{", cl, ",", ch, "}");
+};
+
+print("\nPolynomial:", pff);
+
+// Approximation errors on d, excluding errors from floating-point polynomial
+// evaluation and range reduction.
+display = decimal!;
+err_rel = dirtyinfnorm((pff - f) / f, d);
+print("\nRelative error (estimate):", err_rel);
+print("Relative error in bits (estimate):", pretty(-log2(err_rel)));
+print("Relative error (certified enclosure):",
+      supnorm(pff, f, d, relative, 0x1p-20));
+print("Absolute error (estimate):", dirtyinfnorm(pff - f, d));
+print("Coefficient splitting error (estimate):",
+      dirtyinfnorm(pff - pf, d));

@@ -2,6 +2,7 @@ add_custom_target(libc-gpu-math-benchmarks)
 
 set(math_benchmark_flags "")
 if(LIBC_TARGET_ARCHITECTURE_IS_NVPTX)
+  find_package(CUDAToolkit QUIET)
   if(CUDAToolkit_FOUND)
     set(libdevice_path ${CUDAToolkit_BIN_DIR}/../nvvm/libdevice/libdevice.10.bc)
     if(EXISTS ${libdevice_path})
@@ -77,6 +78,8 @@ add_benchmark(
     libc.src.__support.macros.attributes
     libc.src.__support.macros.config
     libc.src.__support.macros.properties.types
+    libc.src.__support.math.expf_double_eval
+    libc.src.__support.math.expf_float_eval
     libc.src.math.expf
   COMPILE_OPTIONS
     ${math_benchmark_flags}

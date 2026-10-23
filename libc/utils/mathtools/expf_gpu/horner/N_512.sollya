@@ -1,0 +1,52 @@
+// Generate the degree-4 Horner polynomial for expf_float_horner.h with N = 512.
+// N is the number of lookup table entries.
+// Run with: sollya libc/utils/mathtools/expf_gpu/horner/N_512.sollya
+
+prec = 256!;
+
+pretty = proc(u) {
+  return ~(floor(u * 1000) / 1000);
+};
+
+f = exp(x);
+d = [-log(2) / 1024; log(2) / 1024];
+
+// The linear coefficient uses a float-float pair; degrees 2 through 4 use
+// float coefficients. The linear adjustment was selected during an adaptive
+// search using downward-rounded high table words and the reconstruction
+// that combines exp_u.lo + table_entry.lo with corr.
+// Fix the quadratic coefficient to 1/2 and the quartic coefficient to
+// round(1/24, SG, RN); optimize the cubic coefficient for this adjustment.
+c1 = 1 - 19 * 0x1p-45;
+c2 = 0.5;
+c4 = round(1 / 24, SG, RN);
+pf = fpminimax(f, [|3|], [|SG|], d, relative, floating,
+               1 + c1 * x + c2 * x^2 + c4 * x^4);
+
+display = hexadecimal!;
+c1_hi = round(c1, SG, RN);
+c1_lo = round(c1 - c1_hi, SG, RN);
+print("FloatFloat coefficient, degree 1, in {lo, hi} order:");
+print("{", c1_lo, ",", c1_hi, "}");
+
+pff = 1 + (c1_hi + c1_lo) * x;
+print("\nFloat coefficients, degrees 2 through 4:");
+for i from 2 to 4 do {
+  ch = round(coeff(pf, i), SG, RN);
+  pff = pff + ch * x^i;
+  print(ch);
+};
+
+print("\nPolynomial:", pff);
+
+// Approximation errors on d, excluding errors from floating-point polynomial
+// evaluation and range reduction.
+display = decimal!;
+err_rel = dirtyinfnorm((pff - f) / f, d);
+print("\nRelative error (estimate):", err_rel);
+print("Relative error in bits (estimate):", pretty(-log2(err_rel)));
+print("Relative error (certified enclosure):",
+      supnorm(pff, f, d, relative, 0x1p-20));
+print("Absolute error (estimate):", dirtyinfnorm(pff - f, d));
+print("Coefficient rounding error (estimate):",
+      dirtyinfnorm(pff - pf, d));
