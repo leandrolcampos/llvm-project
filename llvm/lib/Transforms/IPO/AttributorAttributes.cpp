@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/IR/BundleAttributes.h"
 #include "llvm/Transforms/IPO/Attributor.h"
 
 #include "llvm/ADT/APInt.h"
@@ -39,6 +40,7 @@
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Assumptions.h"
+#include "llvm/IR/AttributeMask.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constant.h"
@@ -1466,7 +1468,8 @@ struct AAPointerInfoFloating : public AAPointerInfoImpl {
       int64_t ElementSize = DL.getTypeStoreSize(ElementType).getFixedValue();
       auto *ConstContent = cast<Constant>(*Content);
       Type *Int32Ty = Type::getInt32Ty(ElementType->getContext());
-      SmallVector<int64_t> ElementOffsets(Offsets.begin(), Offsets.end());
+      SmallVector<int64_t> ElementOffsets(OffsetsSorted.begin(),
+                                          OffsetsSorted.end());
 
       for (int i = 0, e = VT->getElementCount().getFixedValue(); i != e; ++i) {
         Value *ElementContent = ConstantExpr::getExtractElement(
@@ -2522,11 +2525,19 @@ static int64_t getKnownNonNullAndDerefBytesForUse(
   const DataLayout &DL = A.getInfoCache().getDL();
   if (const auto *CB = dyn_cast<CallBase>(I)) {
     if (CB->isBundleOperand(U)) {
-      if (RetainedKnowledge RK = getKnowledgeFromUse(
-              U, {Attribute::NonNull, Attribute::Dereferenceable})) {
-        IsNonNull |=
-            (RK.AttrKind == Attribute::NonNull || !NullPointerIsDefined);
-        return RK.ArgValue;
+      auto OBU = CB->getOperandBundleForOperand(U->getOperandNo());
+      switch (getBundleAttrFromOBU(OBU)) {
+      case BundleAttr::NonNull:
+        IsNonNull = true;
+        break;
+      case BundleAttr::Dereferenceable: {
+        IsNonNull |= !NullPointerIsDefined;
+        Value *Count = getAssumeDereferenceableInfo(OBU).Count;
+        if (auto *CI = dyn_cast<ConstantInt>(Count))
+          return CI->getZExtValue();
+      } break;
+      default:
+        break;
       }
       return 0;
     }
@@ -10469,6 +10480,20 @@ struct AANoUndefReturned final
     : AAReturnedFromReturnedValues<AANoUndef, AANoUndefImpl> {
   AANoUndefReturned(const IRPosition &IRP, Attributor &A)
       : AAReturnedFromReturnedValues<AANoUndef, AANoUndefImpl>(IRP, A) {}
+
+  void initialize(Attributor &A) override {
+    AAReturnedFromReturnedValues<AANoUndef, AANoUndefImpl>::initialize(A);
+    if (isAtFixpoint())
+      return;
+
+    // Returning a value that violates a return attribute, e.g., nonnull, is
+    // poison.
+    AttributeMask AM = AttributeFuncs::getPoisonGeneratingAttributes();
+    AttributeSet RetAttrs =
+        getAssociatedFunction()->getAttributes().getRetAttrs();
+    if (any_of(RetAttrs, [&](Attribute Attr) { return AM.contains(Attr); }))
+      indicatePessimisticFixpoint();
+  }
 
   /// See AbstractAttribute::trackStatistics()
   void trackStatistics() const override { STATS_DECLTRACK_FNRET_ATTR(noundef) }

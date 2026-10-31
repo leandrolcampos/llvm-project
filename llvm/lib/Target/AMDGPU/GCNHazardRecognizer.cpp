@@ -1127,6 +1127,9 @@ getWaitStatesSince(GCNHazardRecognizer::IsHazardFn IsHazard,
     if (I->isBundle())
       continue;
 
+    if (I->isMetaInstruction())
+      continue;
+
     if (IsHazard(*I))
       return WaitStates;
 
@@ -4194,7 +4197,6 @@ bool GCNHazardRecognizer::fixVALUMaskWriteHazard(MachineInstr *MI) {
     }
   };
 
-  SmallVector<const MachineInstr *> WaitInstrs;
   StateType InitialState;
 
   // Look for SGPR write.
