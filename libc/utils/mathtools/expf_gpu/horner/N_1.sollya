@@ -12,8 +12,8 @@ f = exp(x);
 
 d = [-log(2) / 2; log(2) / 2];
 
-// Float-float coefficients (degrees 3 through 6) use 49 = 2 * 24 + 1 bits.
-// The quadratic coefficient is 1/2; degrees 7 through 10 use float coefficients.
+// Float-float coefficients (degrees 3 through 6) use 49 = 2 * 24 + 1 bits;
+// degrees 7 through 10 use float coefficients.
 pf = fpminimax(f, [|2, ..., 10|],
                [|24, 49, 49, 49, 49, 24, 24, 24, 24|],
                d, relative, floating, 1 + x);
