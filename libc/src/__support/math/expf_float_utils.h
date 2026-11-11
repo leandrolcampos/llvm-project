@@ -20,8 +20,10 @@
 #include "src/__support/macros/config.h"
 #include "src/__support/math/expf_float_config.h"
 
-#ifdef LIBC_MATH_EXPF_USES_HORNER_SCHEME
+#if defined(LIBC_MATH_EXPF_USES_HORNER_SCHEME)
 #include "src/__support/math/expf_float_horner.h"
+#elif defined(LIBC_MATH_EXPF_USES_ESTRIN_SCHEME)
+#include "src/__support/math/expf_float_estrin.h"
 #endif
 
 namespace LIBC_NAMESPACE_DECL {
