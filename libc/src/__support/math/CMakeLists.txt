@@ -3303,14 +3303,61 @@ add_header_library(
 )
 
 add_header_library(
-  expf_float_utils
+  expf_float_config
   HDRS
-    expf_float_utils.h
+    expf_float_config.h
   DEPENDS
+    libc.src.__support.macros.attributes
+)
+
+add_header_library(
+  expf_float_constants
+  HDRS
+    expf_float_constants.h
+  DEPENDS
+    .expf_float_config
+    libc.src.__support.FPUtil.double_double
+    libc.src.__support.macros.attributes
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  expf_float_estrin
+  HDRS
+    expf_float_estrin.h
+  DEPENDS
+    .expf_float_config
+    libc.src.__support.FPUtil.double_double
+    libc.src.__support.FPUtil.fp_bits
+    libc.src.__support.FPUtil.multiply_add
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  expf_float_horner
+  HDRS
+    expf_float_horner.h
+  DEPENDS
+    .expf_float_config
     libc.src.__support.FPUtil.double_double
     libc.src.__support.FPUtil.fp_bits
     libc.src.__support.FPUtil.multiply_add
     libc.src.__support.FPUtil.polyeval
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  expf_float_utils
+  HDRS
+    expf_float_utils.h
+  DEPENDS
+    .expf_float_config
+    .expf_float_estrin
+    .expf_float_horner
+    libc.src.__support.FPUtil.double_double
+    libc.src.__support.FPUtil.fp_bits
     libc.src.__support.common
     libc.src.__support.macros.config
 )
@@ -3321,7 +3368,10 @@ add_header_library(
     expf_float_eval.h
   DEPENDS
     .exp2f_float_utils
+    .expf_float_config
+    .expf_float_constants
     .expf_float_utils
+    libc.src.__support.CPP.bit
     libc.src.__support.FPUtil.double_double
     libc.src.__support.FPUtil.except_value_utils
     libc.src.__support.FPUtil.fp_bits
