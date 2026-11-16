@@ -22,8 +22,14 @@
 
 #if defined(LIBC_MATH_EXPF_USES_HORNER_SCHEME)
 #include "src/__support/math/expf_float_horner.h"
+#elif defined(LIBC_MATH_EXPF_USES_HORNER_2_SCHEME)
+#include "src/__support/math/expf_float_horner_2.h"
+#elif defined(LIBC_MATH_EXPF_USES_ESTRIN_TAIL_SCHEME)
+#include "src/__support/math/expf_float_estrin_tail.h"
 #elif defined(LIBC_MATH_EXPF_USES_ESTRIN_SCHEME)
 #include "src/__support/math/expf_float_estrin.h"
+#elif defined(LIBC_MATH_EXPF_USES_QUADRATIC_PRODUCT_SCHEME)
+#include "src/__support/math/expf_float_quadratic_product.h"
 #endif
 
 namespace LIBC_NAMESPACE_DECL {

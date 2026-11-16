@@ -21,6 +21,7 @@
 #include "src/__support/common.h"
 #include "src/__support/macros/config.h"
 #include "src/__support/math/expf_float_config.h"
+#include "src/__support/math/expf_float_horner_utils.h"
 
 namespace LIBC_NAMESPACE_DECL {
 namespace math {
@@ -28,38 +29,6 @@ namespace float_eval_cr_rn {
 namespace expf_internal {
 
 using fputil::FloatFloat;
-
-LIBC_ALWAYS_INLINE FloatFloat horner_step(float x, const FloatFloat &poly,
-                                          const FloatFloat &coeff) {
-  float hi = fputil::multiply_add(x, poly.hi, coeff.hi);
-  float lo = fputil::multiply_add(x, poly.hi, coeff.hi - hi);
-  lo = fputil::multiply_add(x, poly.lo, lo + coeff.lo);
-  return {lo, hi};
-}
-
-// The float-only tail has no low word to multiply.
-LIBC_ALWAYS_INLINE FloatFloat horner_step(float x, float poly,
-                                          const FloatFloat &coeff) {
-  float hi = fputil::multiply_add(x, poly, coeff.hi);
-  float lo = fputil::multiply_add(x, poly, coeff.hi - hi) + coeff.lo;
-  return {lo, hi};
-}
-
-// Exact float coefficients do not need a low-word addition.
-LIBC_ALWAYS_INLINE FloatFloat horner_step(float x, const FloatFloat &poly,
-                                          float coeff) {
-  float hi = fputil::multiply_add(x, poly.hi, coeff);
-  float lo = fputil::multiply_add(x, poly.hi, coeff - hi);
-  lo = fputil::multiply_add(x, poly.lo, lo);
-  return {lo, hi};
-}
-
-// Neither the float-only tail nor the float coefficient has a low word.
-LIBC_ALWAYS_INLINE FloatFloat horner_step(float x, float poly, float coeff) {
-  float hi = fputil::multiply_add(x, poly, coeff);
-  float lo = fputil::multiply_add(x, poly, coeff - hi);
-  return {lo, hi};
-}
 
 // Common structure of the exp_eval variants below:
 //

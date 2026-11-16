@@ -3335,15 +3335,67 @@ add_header_library(
 )
 
 add_header_library(
-  expf_float_horner
+  expf_float_quadratic_product
   HDRS
-    expf_float_horner.h
+    expf_float_quadratic_product.h
   DEPENDS
     .expf_float_config
     libc.src.__support.FPUtil.double_double
     libc.src.__support.FPUtil.fp_bits
     libc.src.__support.FPUtil.multiply_add
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  expf_float_horner_utils
+  HDRS
+    expf_float_horner_utils.h
+  DEPENDS
+    libc.src.__support.FPUtil.double_double
+    libc.src.__support.FPUtil.multiply_add
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  expf_float_estrin_tail
+  HDRS
+    expf_float_estrin_tail.h
+  DEPENDS
+    .expf_float_config
+    .expf_float_horner_utils
+    libc.src.__support.FPUtil.double_double
+    libc.src.__support.FPUtil.fp_bits
+    libc.src.__support.FPUtil.multiply_add
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  expf_float_horner
+  HDRS
+    expf_float_horner.h
+  DEPENDS
+    .expf_float_config
+    .expf_float_horner_utils
+    libc.src.__support.FPUtil.double_double
+    libc.src.__support.FPUtil.fp_bits
+    libc.src.__support.FPUtil.multiply_add
     libc.src.__support.FPUtil.polyeval
+    libc.src.__support.common
+    libc.src.__support.macros.config
+)
+
+add_header_library(
+  expf_float_horner_2
+  HDRS
+    expf_float_horner_2.h
+  DEPENDS
+    .expf_float_config
+    libc.src.__support.FPUtil.double_double
+    libc.src.__support.FPUtil.fp_bits
+    libc.src.__support.FPUtil.multiply_add
     libc.src.__support.common
     libc.src.__support.macros.config
 )
@@ -3355,7 +3407,10 @@ add_header_library(
   DEPENDS
     .expf_float_config
     .expf_float_estrin
+    .expf_float_estrin_tail
     .expf_float_horner
+    .expf_float_horner_2
+    .expf_float_quadratic_product
     libc.src.__support.FPUtil.double_double
     libc.src.__support.FPUtil.fp_bits
     libc.src.__support.common
