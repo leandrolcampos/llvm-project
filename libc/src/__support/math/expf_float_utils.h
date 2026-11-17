@@ -28,8 +28,6 @@
 #include "src/__support/math/expf_float_estrin_tail.h"
 #elif defined(LIBC_MATH_EXPF_USES_ESTRIN_SCHEME)
 #include "src/__support/math/expf_float_estrin.h"
-#elif defined(LIBC_MATH_EXPF_USES_QUADRATIC_PRODUCT_SCHEME)
-#include "src/__support/math/expf_float_quadratic_product.h"
 #endif
 
 namespace LIBC_NAMESPACE_DECL {

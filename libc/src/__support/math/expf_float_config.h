@@ -26,7 +26,7 @@
 
 #if LIBC_MATH_EXPF_TABLE_SIZE == 1
 #define LIBC_MATH_EXPF_USES_NO_TABLE
-#elif LIBC_MATH_EXPF_TABLE_SIZE < 1 || LIBC_MATH_EXPF_TABLE_SIZE > 1024 ||     \
+#elif LIBC_MATH_EXPF_TABLE_SIZE < 1 || LIBC_MATH_EXPF_TABLE_SIZE > 128 ||     \
     (LIBC_MATH_EXPF_TABLE_SIZE & (LIBC_MATH_EXPF_TABLE_SIZE - 1)) != 0
 #error "Unsupported table size for expf"
 #endif
