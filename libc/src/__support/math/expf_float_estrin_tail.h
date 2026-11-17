@@ -30,6 +30,35 @@ namespace expf_internal {
 
 using fputil::FloatFloat;
 
+// Common structure of the exp_eval variants below:
+//
+// For N = 1, exp_eval approximates e^u for the reduced input u. For N > 1,
+// it returns an approximation to e^u = 2^(j / N) * e^r, where
+// u = r + j * log(2) / N and table_entry represents the factor 2^(j / N).
+// N is LIBC_MATH_EXPF_TABLE_SIZE.
+//
+// First approximate expm1(r.hi), retaining rounding residuals, then correct
+// for r.lo using expm1(r) = expm1(r.hi) + r.lo * e^(r.hi) + O(r.lo^2).
+// exp_r_hi approximates e^(r.hi) for this correction. The N = 1 variant
+// uses u instead of r and exp_u.hi for the approximation to e^(u.hi).
+//
+// Using the lookup table value T, reconstruct e^u as T + T * expm1(r).
+// Depending on the variant, corr includes a contribution from either:
+// - table_entry.lo * expm1(r.hi), with the standalone table_entry.lo
+//   added to exp_u.lo before combining with corr; or
+// - table_entry.lo * exp_r_hi, which approximately accounts for both
+//   table_entry.lo and table_entry.lo * expm1(r.hi).
+//
+// For N = 8, the contribution from poly_q.lo is scaled separately by
+// table_entry.hi * x2.hi and incorporated directly into corr, shortening
+// its dependency path.
+//
+// Rounding the low sum to nearest can create a midpoint for the final
+// addition of exp_u.hi and the rounded low sum.
+//
+// Round inexact low sums to odd whenever their rounded value is a power of
+// two, preserving the side of a midpoint for the final RN-even addition.
+
 #ifdef LIBC_MATH_EXPF_USES_NO_TABLE
 
 // Q(x) = A + x^2 * B + x^4 * T, evaluated with Estrin's scheme.
@@ -40,16 +69,15 @@ LIBC_ALWAYS_INLINE FloatFloat eval_poly_q(float x, const FloatFloat &x2) {
       {-0x1.54b804p-30f, 0x1.555556p-5f},
       {-0x1.be626cp-32f, 0x1.111112p-7f},
   };
+
   float x4 = x2.hi * x2.hi;
 
   // Independent coefficient pairs: A = c3 + x * c4, B = c5 + x * c6.
   FloatFloat a;
   a.hi = fputil::multiply_add(x, COEFFS[1].hi, COEFFS[0].hi);
-  float a_resid = fputil::multiply_add(x, COEFFS[1].hi, COEFFS[0].hi - a.hi);
-  // Evaluate coefficient low words independently from the high-word residual.
+  float a_residual = fputil::multiply_add(x, COEFFS[1].hi, COEFFS[0].hi - a.hi);
   float a_coeff_lo = fputil::multiply_add(x, COEFFS[1].lo, COEFFS[0].lo);
-  a.lo = a_resid + a_coeff_lo;
-
+  a.lo = a_residual + a_coeff_lo;
   FloatFloat b = horner_step(x, 0x1.6c16cp-10f, COEFFS[2]);
 
   // Float-only tail contributing to degrees 7 through 10 of P:
@@ -58,20 +86,18 @@ LIBC_ALWAYS_INLINE FloatFloat eval_poly_q(float x, const FloatFloat &x2) {
   float t1 = fputil::multiply_add(x, 0x1.2473p-22f, 0x1.72db3p-19f);
   float tail = fputil::multiply_add(x2.hi, t1, t0);
 
-  // Preserve the high-word Estrin tree and accumulate its combined residual.
   float q0_hi = fputil::multiply_add(x2.hi, b.hi, a.hi);
-
   FloatFloat poly_q;
   poly_q.hi = fputil::multiply_add(x4, tail, q0_hi);
 
+  // Combined residual of the two high-word merges.
   poly_q.lo = fputil::multiply_add(x2.hi, b.hi, a.hi - poly_q.hi);
   poly_q.lo = fputil::multiply_add(x4, tail, poly_q.lo);
 
-  // Accumulate low-word corrections independently from the merge residual.
+  // Low-word corrections from A, B, and x^2.
   float q_corr = fputil::multiply_add(x2.hi, b.lo, a.lo);
   q_corr = fputil::multiply_add(x2.lo, b.hi, q_corr);
   poly_q.lo += q_corr;
-
   return poly_q;
 }
 
@@ -87,42 +113,34 @@ LIBC_ALWAYS_INLINE FloatFloat eval_poly_q(float x, const FloatFloat &x2) {
 LIBC_INLINE FloatFloat exp_eval(const FloatFloat &u) {
   // Evaluate at u.hi; correct for u.lo after reconstructing exp(u.hi).
   const float x = u.hi;
-  // Retain the square residual for the compensated low-degree terms.
   FloatFloat x2 = fputil::exact_mult(x, x);
   FloatFloat poly_q = eval_poly_q(x, x2);
-
   FloatFloat poly = horner_step(x, poly_q, 0.5f);
 
-  // Form the high word of expm1(x) and its FMA residual.
-  float expm1_x_hi = fputil::multiply_add(x2.hi, poly.hi, x);
-  float expm1_x_resid = fputil::multiply_add(x2.hi, poly.hi, x - expm1_x_hi);
-  FloatFloat exp_u = fputil::exact_add(1.0f, expm1_x_hi);
+  float expm1_x = fputil::multiply_add(x2.hi, poly.hi, x);
+  float expm1_x_residual = fputil::multiply_add(x2.hi, poly.hi, x - expm1_x);
+  FloatFloat exp_u = fputil::exact_add(1.0f, expm1_x);
 
-  // Compute the square and range-reduction corrections independently of
-  // poly.lo.
   float corr = fputil::multiply_add(u.lo, exp_u.hi, x2.lo * poly.hi);
-  corr += expm1_x_resid;
+  corr += expm1_x_residual;
   corr = fputil::multiply_add(x2.hi, poly.lo, corr);
 
-  // FastTwoSum here is exact in RN: for nonzero corr, exp_u.lo is an integer
-  // multiple of ulp(corr), as required by Theorem 1 of "FastTwoSum revisited".
-  float lo_sum_hi = exp_u.lo + corr;
-  float corr_hi = lo_sum_hi - exp_u.lo;
-  // Only the sign and zero status of corr - corr_hi are needed. For these
-  // finite operands, comparisons preserve both without forming the difference.
-  bool has_residual = corr != corr_hi;
-  bool residual_is_pos = corr > corr_hi;
+  // First two steps of FastTwoSum; only the residual's zero status and sign
+  // are needed for rounding to odd.
+  float lo_sum = exp_u.lo + corr;
+  float recovered_corr = lo_sum - exp_u.lo;
+  bool has_residual = corr != recovered_corr;
+  bool is_residual_positive = corr > recovered_corr;
 
   // Round inexact low sums to odd when they round to a power of two,
   // preserving the side of a midpoint for the final RN-even addition.
-  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum_hi).uintval();
+  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum).uintval();
   bool should_round_to_odd =
       (lo_sum_u & fputil::FPBits<float>::FRACTION_MASK) == 0 && has_residual;
   uint32_t rounding_adj =
-      ((lo_sum_hi > 0.0f) == (residual_is_pos)) ? 1U : uint32_t(-1);
+      ((lo_sum > 0.0f) == (is_residual_positive)) ? 1U : uint32_t(-1);
   lo_sum_u += should_round_to_odd ? rounding_adj : 0U;
   exp_u.lo = fputil::FPBits<float>(lo_sum_u).get_val();
-
   return exp_u;
 }
 
@@ -135,31 +153,31 @@ LIBC_ALWAYS_INLINE FloatFloat eval_poly_q(float x, const FloatFloat &x2) {
       {-0x1.54b194p-28f, 0x1.555556p-3f},
       {-0x1.69a798p-30f, 0x1.555556p-5f},
   };
+
   float x4 = x2.hi * x2.hi;
 
   // Independent coefficient pairs: A = c3 + x * c4, B = c5 + x * c6.
   FloatFloat a;
   a.hi = fputil::multiply_add(x, COEFFS[1].hi, COEFFS[0].hi);
-  float a_resid = fputil::multiply_add(x, COEFFS[1].hi, COEFFS[0].hi - a.hi);
-  a.lo = a_resid + fputil::multiply_add(x, COEFFS[1].lo, COEFFS[0].lo);
+  float a_residual = fputil::multiply_add(x, COEFFS[1].hi, COEFFS[0].hi - a.hi);
+  a.lo = a_residual + fputil::multiply_add(x, COEFFS[1].lo, COEFFS[0].lo);
   FloatFloat b = horner_step(x, 0x1.6c1738p-10f, 0x1.11110cp-7f);
 
   // Float-only tail contributing to degrees 7 and 8 of P: T = c7 + x * c8.
   float tail = fputil::multiply_add(x, 0x1.9da148p-16f, 0x1.a06a64p-13f);
 
   float q0_hi = fputil::multiply_add(x2.hi, b.hi, a.hi);
-
   FloatFloat poly_q;
   poly_q.hi = fputil::multiply_add(x4, tail, q0_hi);
 
-  // Accumulate the two merge residuals together.
+  // Combined residual of the two high-word merges.
   poly_q.lo = fputil::multiply_add(x2.hi, b.hi, a.hi - poly_q.hi);
   poly_q.lo = fputil::multiply_add(x4, tail, poly_q.lo);
-  // Compute coefficient and square corrections independently of that residual.
+
+  // Low-word corrections from A, B, and x^2.
   float q_corr = fputil::multiply_add(x2.lo, b.hi, a.lo);
   q_corr = fputil::multiply_add(x2.hi, b.lo, q_corr);
   poly_q.lo += q_corr;
-
   return poly_q;
 }
 
@@ -176,47 +194,40 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
                                 const FloatFloat &table_entry) {
   // Evaluate at r.hi; correct for r.lo before multiplying by the table entry.
   const float x = r.hi;
-  // Retain the square residual for the compensated low-degree terms.
   FloatFloat x2 = fputil::exact_mult(x, x);
   FloatFloat poly_q = eval_poly_q(x, x2);
-
   FloatFloat poly = horner_step(x, poly_q, 0.5f);
 
-  // Form the high word of expm1(x) and its FMA residual.
-  float expm1_x_hi = fputil::multiply_add(x2.hi, poly.hi, x);
-  float expm1_x_resid = fputil::multiply_add(x2.hi, poly.hi, x - expm1_x_hi);
-  // Compute the square and range-reduction corrections independently of
-  // poly.lo.
-  float exp_r_hi = 1.0f + expm1_x_hi;
+  float expm1_x = fputil::multiply_add(x2.hi, poly.hi, x);
+  float expm1_x_residual = fputil::multiply_add(x2.hi, poly.hi, x - expm1_x);
+
+  float exp_r_hi = 1.0f + expm1_x;
   float expm1_r_lo = fputil::multiply_add(r.lo, exp_r_hi, x2.lo * poly.hi);
-  expm1_r_lo += expm1_x_resid;
+  expm1_r_lo += expm1_x_residual;
   expm1_r_lo = fputil::multiply_add(x2.hi, poly.lo, expm1_r_lo);
 
-  FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_x_hi);
-  // Incorporate the table low word before the late expm1_r_lo correction.
-  float corr =
-      fputil::multiply_add(table_entry.lo, expm1_x_hi, table_product.lo);
+  FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_x);
+  float corr = fputil::multiply_add(table_entry.lo, expm1_x, table_product.lo);
   corr = fputil::multiply_add(table_entry.hi, expm1_r_lo, corr);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
-
   float lo_base = exp_u.lo + table_entry.lo;
-  float lo_sum_hi = lo_base + corr;
-  float corr_hi = lo_sum_hi - lo_base;
-  // Only the sign and zero status of corr - corr_hi are needed. For these
-  // finite operands, comparisons preserve both without forming the difference.
-  bool has_residual = corr != corr_hi;
-  bool residual_is_pos = corr > corr_hi;
+
+  // First two steps of FastTwoSum; only the residual's zero status and sign
+  // are needed for rounding to odd.
+  float lo_sum = lo_base + corr;
+  float recovered_corr = lo_sum - lo_base;
+  bool has_residual = corr != recovered_corr;
+  bool is_residual_positive = corr > recovered_corr;
 
   // Round inexact low sums to odd when they round to a power of two,
   // preserving the side of a midpoint for the final RN-even addition.
-  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum_hi).uintval();
+  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum).uintval();
   bool should_round_to_odd =
       (lo_sum_u & fputil::FPBits<float>::FRACTION_MASK) == 0 && has_residual;
   uint32_t rounding_adj =
-      ((lo_sum_hi > 0.0f) == (residual_is_pos)) ? 1U : uint32_t(-1);
+      ((lo_sum > 0.0f) == (is_residual_positive)) ? 1U : uint32_t(-1);
   lo_sum_u += should_round_to_odd ? rounding_adj : 0U;
   exp_u.lo = fputil::FPBits<float>(lo_sum_u).get_val();
-
   return exp_u;
 }
 
@@ -237,7 +248,6 @@ LIBC_ALWAYS_INLINE FloatFloat eval_poly_q(float x, const FloatFloat &x2) {
   // T = (c5 + x * c6) + x^2 * c7.
   float t0 = fputil::multiply_add(x, 0x1.6c29dp-10f, 0x1.11112p-7f);
   float tail = fputil::multiply_add(x2.hi, 0x1.9edd64p-13f, t0);
-
   return horner_step(x2.hi, tail, a);
 }
 
@@ -254,48 +264,40 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
                                 const FloatFloat &table_entry) {
   // Evaluate at r.hi; correct for r.lo before multiplying by the table entry.
   const float x = r.hi;
-  // Retain the square residual for reconstructing expm1(x).
   FloatFloat x2 = fputil::exact_mult(x, x);
   FloatFloat poly_q = eval_poly_q(x, x2);
-
   FloatFloat poly = horner_step(x, poly_q, 0.5f);
 
-  // Form the high word of expm1(x) and its FMA residual.
-  float expm1_x_hi = fputil::multiply_add(x2.hi, poly.hi, x);
-  float expm1_x_resid = fputil::multiply_add(x2.hi, poly.hi, x - expm1_x_hi);
+  float expm1_x = fputil::multiply_add(x2.hi, poly.hi, x);
+  float expm1_x_residual = fputil::multiply_add(x2.hi, poly.hi, x - expm1_x);
 
-  // Compute the square and range-reduction corrections independently of
-  // poly.lo.
-  float exp_r_hi = 1.0f + expm1_x_hi;
+  float exp_r_hi = 1.0f + expm1_x;
   float expm1_r_lo = fputil::multiply_add(r.lo, exp_r_hi, x2.lo * poly.hi);
-  expm1_r_lo += expm1_x_resid;
+  expm1_r_lo += expm1_x_residual;
   expm1_r_lo = fputil::multiply_add(x2.hi, poly.lo, expm1_r_lo);
 
-  FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_x_hi);
-  // Incorporate the table low word before the late expm1_r_lo correction.
-  float corr =
-      fputil::multiply_add(table_entry.lo, expm1_x_hi, table_product.lo);
+  FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_x);
+  float corr = fputil::multiply_add(table_entry.lo, expm1_x, table_product.lo);
   corr = fputil::multiply_add(table_entry.hi, expm1_r_lo, corr);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
-
   float lo_base = exp_u.lo + table_entry.lo;
-  float lo_sum_hi = lo_base + corr;
-  float corr_hi = lo_sum_hi - lo_base;
-  // Only the sign and zero status of corr - corr_hi are needed. For these
-  // finite operands, comparisons preserve both without forming the difference.
-  bool has_residual = corr != corr_hi;
-  bool residual_is_pos = corr > corr_hi;
+
+  // First two steps of FastTwoSum; only the residual's zero status and sign
+  // are needed for rounding to odd.
+  float lo_sum = lo_base + corr;
+  float recovered_corr = lo_sum - lo_base;
+  bool has_residual = corr != recovered_corr;
+  bool is_residual_positive = corr > recovered_corr;
 
   // Round inexact low sums to odd when they round to a power of two,
   // preserving the side of a midpoint for the final RN-even addition.
-  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum_hi).uintval();
+  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum).uintval();
   bool should_round_to_odd =
       (lo_sum_u & fputil::FPBits<float>::FRACTION_MASK) == 0 && has_residual;
   uint32_t rounding_adj =
-      ((lo_sum_hi > 0.0f) == (residual_is_pos)) ? 1U : uint32_t(-1);
+      ((lo_sum > 0.0f) == (is_residual_positive)) ? 1U : uint32_t(-1);
   lo_sum_u += should_round_to_odd ? rounding_adj : 0U;
   exp_u.lo = fputil::FPBits<float>(lo_sum_u).get_val();
-
   return exp_u;
 }
 
@@ -313,7 +315,6 @@ LIBC_ALWAYS_INLINE FloatFloat eval_poly_q(float x, const FloatFloat &x2) {
   float tail = fputil::multiply_add(x2.hi, t1, t0);
 
   float a = fputil::multiply_add(x, COEFF.hi, 0.5f);
-
   FloatFloat poly_q;
   poly_q.hi = fputil::multiply_add(x2.hi, tail, a);
 
@@ -322,7 +323,6 @@ LIBC_ALWAYS_INLINE FloatFloat eval_poly_q(float x, const FloatFloat &x2) {
   poly_q.lo = fputil::multiply_add(x2.hi, tail, poly_q.lo);
   poly_q.lo = fputil::multiply_add(x, COEFF.lo, poly_q.lo);
   poly_q.lo = fputil::multiply_add(x2.lo, tail, poly_q.lo);
-
   return poly_q;
 }
 
@@ -339,47 +339,42 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
                                 const FloatFloat &table_entry) {
   // Evaluate at r.hi; correct for r.lo before multiplying by the table entry.
   const float x = r.hi;
-  // Retain the square residual for reconstructing expm1(x).
   FloatFloat x2 = fputil::exact_mult(x, x);
   FloatFloat poly_q = eval_poly_q(x, x2);
 
-  // Form the high word of expm1(x) and its FMA residual.
-  float expm1_x_hi = fputil::multiply_add(x2.hi, poly_q.hi, x);
-  float expm1_x_resid = fputil::multiply_add(x2.hi, poly_q.hi, x - expm1_x_hi);
-  // Compute the square and range-reduction corrections independently of
-  // poly_q.lo, which is incorporated after scaling by the table entry.
-  float exp_r_hi = 1.0f + expm1_x_hi;
-  float expm1_r_lo = fputil::multiply_add(r.lo, exp_r_hi, x2.lo * poly_q.hi);
-  expm1_r_lo += expm1_x_resid;
+  float expm1_x = fputil::multiply_add(x2.hi, poly_q.hi, x);
+  float expm1_x_residual = fputil::multiply_add(x2.hi, poly_q.hi, x - expm1_x);
 
-  FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_x_hi);
-  // Incorporate the table low word before the late expm1_r_lo correction.
-  float corr =
-      fputil::multiply_add(table_entry.lo, expm1_x_hi, table_product.lo);
+  float exp_r_hi = 1.0f + expm1_x;
+  float expm1_r_lo = fputil::multiply_add(r.lo, exp_r_hi, x2.lo * poly_q.hi);
+  expm1_r_lo += expm1_x_residual;
+
+  FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_x);
+  float corr = fputil::multiply_add(table_entry.lo, expm1_x, table_product.lo);
   corr = fputil::multiply_add(table_entry.hi, expm1_r_lo, corr);
-  // Scale the late polynomial correction independently of expm1_r_lo.
+
+  // Scale poly_q.lo separately to shorten its dependency path.
   float table_x2 = table_entry.hi * x2.hi;
   corr = fputil::multiply_add(table_x2, poly_q.lo, corr);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
-
   float lo_base = exp_u.lo + table_entry.lo;
-  float lo_sum_hi = lo_base + corr;
-  float corr_hi = lo_sum_hi - lo_base;
-  // Only the sign and zero status of corr - corr_hi are needed. For these
-  // finite operands, comparisons preserve both without forming the difference.
-  bool has_residual = corr != corr_hi;
-  bool residual_is_pos = corr > corr_hi;
+
+  // First two steps of FastTwoSum; only the residual's zero status and sign
+  // are needed for rounding to odd.
+  float lo_sum = lo_base + corr;
+  float recovered_corr = lo_sum - lo_base;
+  bool has_residual = corr != recovered_corr;
+  bool is_residual_positive = corr > recovered_corr;
 
   // Round inexact low sums to odd when they round to a power of two,
   // preserving the side of a midpoint for the final RN-even addition.
-  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum_hi).uintval();
+  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum).uintval();
   bool should_round_to_odd =
       (lo_sum_u & fputil::FPBits<float>::FRACTION_MASK) == 0 && has_residual;
   uint32_t rounding_adj =
-      ((lo_sum_hi > 0.0f) == (residual_is_pos)) ? 1U : uint32_t(-1);
+      ((lo_sum > 0.0f) == (is_residual_positive)) ? 1U : uint32_t(-1);
   lo_sum_u += should_round_to_odd ? rounding_adj : 0U;
   exp_u.lo = fputil::FPBits<float>(lo_sum_u).get_val();
-
   return exp_u;
 }
 
@@ -396,7 +391,6 @@ LIBC_ALWAYS_INLINE FloatFloat eval_poly_q(float x, const FloatFloat &x2) {
   float tail = fputil::multiply_add(x2.hi, 0x1.7df09cp-10f, t0);
 
   float a = fputil::multiply_add(x, COEFF.hi, 0.5f);
-
   FloatFloat poly_q;
   poly_q.hi = fputil::multiply_add(x2.hi, tail, a);
 
@@ -404,7 +398,6 @@ LIBC_ALWAYS_INLINE FloatFloat eval_poly_q(float x, const FloatFloat &x2) {
   poly_q.lo = fputil::multiply_add(x, COEFF.hi, 0.5f - poly_q.hi);
   poly_q.lo = fputil::multiply_add(x2.hi, tail, poly_q.lo);
   poly_q.lo = fputil::multiply_add(x, COEFF.lo, poly_q.lo);
-
   return poly_q;
 }
 
@@ -421,44 +414,38 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
                                 const FloatFloat &table_entry) {
   // Evaluate at r.hi; correct for r.lo before multiplying by the table entry.
   const float x = r.hi;
-  // Retain the square residual for reconstructing expm1(x).
   FloatFloat x2 = fputil::exact_mult(x, x);
   FloatFloat poly_q = eval_poly_q(x, x2);
 
-  // Form the high word of expm1(x) and its FMA residual.
-  float expm1_x_hi = fputil::multiply_add(x2.hi, poly_q.hi, x);
-  float expm1_x_resid = fputil::multiply_add(x2.hi, poly_q.hi, x - expm1_x_hi);
+  float expm1_x = fputil::multiply_add(x2.hi, poly_q.hi, x);
+  float expm1_x_residual = fputil::multiply_add(x2.hi, poly_q.hi, x - expm1_x);
 
-  // Compute the square and range-reduction corrections independently of
-  // poly_q.lo.
-  float exp_r_hi = 1.0f + expm1_x_hi;
+  float exp_r_hi = 1.0f + expm1_x;
   float expm1_r_lo = fputil::multiply_add(r.lo, exp_r_hi, x2.lo * poly_q.hi);
-  expm1_r_lo += expm1_x_resid;
+  expm1_r_lo += expm1_x_residual;
   expm1_r_lo = fputil::multiply_add(x2.hi, poly_q.lo, expm1_r_lo);
 
-  FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_x_hi);
-  // Incorporate the table low word before the late expm1_r_lo correction.
+  FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_x);
   float corr = fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
   corr = fputil::multiply_add(table_entry.hi, expm1_r_lo, corr);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  float lo_sum_hi = exp_u.lo + corr;
-  float corr_hi = lo_sum_hi - exp_u.lo;
-  // Only the sign and zero status of corr - corr_hi are needed. For these
-  // finite operands, comparisons preserve both without forming the difference.
-  bool has_residual = corr != corr_hi;
-  bool residual_is_pos = corr > corr_hi;
+  // First two steps of FastTwoSum; only the residual's zero status and sign
+  // are needed for rounding to odd.
+  float lo_sum = exp_u.lo + corr;
+  float recovered_corr = lo_sum - exp_u.lo;
+  bool has_residual = corr != recovered_corr;
+  bool is_residual_positive = corr > recovered_corr;
 
   // Round inexact low sums to odd when they round to a power of two,
   // preserving the side of a midpoint for the final RN-even addition.
-  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum_hi).uintval();
+  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum).uintval();
   bool should_round_to_odd =
       (lo_sum_u & fputil::FPBits<float>::FRACTION_MASK) == 0 && has_residual;
   uint32_t rounding_adj =
-      ((lo_sum_hi > 0.0f) == (residual_is_pos)) ? 1U : uint32_t(-1);
+      ((lo_sum > 0.0f) == (is_residual_positive)) ? 1U : uint32_t(-1);
   lo_sum_u += should_round_to_odd ? rounding_adj : 0U;
   exp_u.lo = fputil::FPBits<float>(lo_sum_u).get_val();
-
   return exp_u;
 }
 
@@ -480,7 +467,6 @@ LIBC_ALWAYS_INLINE FloatFloat eval_poly_q(float x, const FloatFloat &x2) {
   poly_q.lo = fputil::multiply_add(x, COEFF.hi, 0.5f - poly_q.hi);
   poly_q.lo = fputil::multiply_add(x2.hi, b, poly_q.lo);
   poly_q.lo = fputil::multiply_add(x, COEFF.lo, poly_q.lo);
-
   return poly_q;
 }
 
@@ -497,44 +483,38 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
                                 const FloatFloat &table_entry) {
   // Evaluate at r.hi; correct for r.lo before multiplying by the table entry.
   const float x = r.hi;
-  // Retain the square residual for reconstructing expm1(x).
   FloatFloat x2 = fputil::exact_mult(x, x);
   FloatFloat poly_q = eval_poly_q(x, x2);
 
-  // Form the high word of expm1(x) and its FMA residual.
-  float expm1_x_hi = fputil::multiply_add(x2.hi, poly_q.hi, x);
-  float expm1_x_resid = fputil::multiply_add(x2.hi, poly_q.hi, x - expm1_x_hi);
+  float expm1_x = fputil::multiply_add(x2.hi, poly_q.hi, x);
+  float expm1_x_residual = fputil::multiply_add(x2.hi, poly_q.hi, x - expm1_x);
 
-  // Compute the square and range-reduction corrections independently of
-  // poly_q.lo.
-  float exp_r_hi = 1.0f + expm1_x_hi;
+  float exp_r_hi = 1.0f + expm1_x;
   float expm1_r_lo = fputil::multiply_add(r.lo, exp_r_hi, x2.lo * poly_q.hi);
-  expm1_r_lo += expm1_x_resid;
+  expm1_r_lo += expm1_x_residual;
   expm1_r_lo = fputil::multiply_add(x2.hi, poly_q.lo, expm1_r_lo);
 
-  FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_x_hi);
-  // Incorporate the table low word before the late expm1_r_lo correction.
+  FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_x);
   float corr = fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
   corr = fputil::multiply_add(table_entry.hi, expm1_r_lo, corr);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  float lo_sum_hi = exp_u.lo + corr;
-  float corr_hi = lo_sum_hi - exp_u.lo;
-  // Only the sign and zero status of corr - corr_hi are needed. For these
-  // finite operands, comparisons preserve both without forming the difference.
-  bool has_residual = corr != corr_hi;
-  bool residual_is_pos = corr > corr_hi;
+  // First two steps of FastTwoSum; only the residual's zero status and sign
+  // are needed for rounding to odd.
+  float lo_sum = exp_u.lo + corr;
+  float recovered_corr = lo_sum - exp_u.lo;
+  bool has_residual = corr != recovered_corr;
+  bool is_residual_positive = corr > recovered_corr;
 
   // Round inexact low sums to odd when they round to a power of two,
   // preserving the side of a midpoint for the final RN-even addition.
-  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum_hi).uintval();
+  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum).uintval();
   bool should_round_to_odd =
       (lo_sum_u & fputil::FPBits<float>::FRACTION_MASK) == 0 && has_residual;
   uint32_t rounding_adj =
-      ((lo_sum_hi > 0.0f) == (residual_is_pos)) ? 1U : uint32_t(-1);
+      ((lo_sum > 0.0f) == (is_residual_positive)) ? 1U : uint32_t(-1);
   lo_sum_u += should_round_to_odd ? rounding_adj : 0U;
   exp_u.lo = fputil::FPBits<float>(lo_sum_u).get_val();
-
   return exp_u;
 }
 
@@ -552,7 +532,6 @@ LIBC_ALWAYS_INLINE FloatFloat eval_poly_q(float x, const FloatFloat &x2) {
   // Accumulate the pair and combination residuals.
   poly_q.lo = fputil::multiply_add(x, 0x1.555558p-3f, 0.5f - poly_q.hi);
   poly_q.lo = fputil::multiply_add(x2.hi, b, poly_q.lo);
-
   return poly_q;
 }
 
@@ -568,44 +547,38 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
                                 const FloatFloat &table_entry) {
   // Evaluate at r.hi; correct for r.lo before multiplying by the table entry.
   const float x = r.hi;
-  // Retain the square residual for reconstructing expm1(x).
   FloatFloat x2 = fputil::exact_mult(x, x);
   FloatFloat poly_q = eval_poly_q(x, x2);
 
-  // Form the high word of expm1(x) and its FMA residual.
-  float expm1_x_hi = fputil::multiply_add(x2.hi, poly_q.hi, x);
-  float expm1_x_resid = fputil::multiply_add(x2.hi, poly_q.hi, x - expm1_x_hi);
+  float expm1_x = fputil::multiply_add(x2.hi, poly_q.hi, x);
+  float expm1_x_residual = fputil::multiply_add(x2.hi, poly_q.hi, x - expm1_x);
 
-  // Compute the square and range-reduction corrections independently of
-  // poly_q.lo.
-  float exp_r_hi = 1.0f + expm1_x_hi;
+  float exp_r_hi = 1.0f + expm1_x;
   float expm1_r_lo = fputil::multiply_add(r.lo, exp_r_hi, x2.lo * poly_q.hi);
-  expm1_r_lo += expm1_x_resid;
+  expm1_r_lo += expm1_x_residual;
   expm1_r_lo = fputil::multiply_add(x2.hi, poly_q.lo, expm1_r_lo);
 
-  FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_x_hi);
-  // Incorporate the table low word before the late expm1_r_lo correction.
+  FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_x);
   float corr = fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
   corr = fputil::multiply_add(table_entry.hi, expm1_r_lo, corr);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  float lo_sum_hi = exp_u.lo + corr;
-  float corr_hi = lo_sum_hi - exp_u.lo;
-  // Only the sign and zero status of corr - corr_hi are needed. For these
-  // finite operands, comparisons preserve both without forming the difference.
-  bool has_residual = corr != corr_hi;
-  bool residual_is_pos = corr > corr_hi;
+  // First two steps of FastTwoSum; only the residual's zero status and sign
+  // are needed for rounding to odd.
+  float lo_sum = exp_u.lo + corr;
+  float recovered_corr = lo_sum - exp_u.lo;
+  bool has_residual = corr != recovered_corr;
+  bool is_residual_positive = corr > recovered_corr;
 
   // Round inexact low sums to odd when they round to a power of two,
   // preserving the side of a midpoint for the final RN-even addition.
-  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum_hi).uintval();
+  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum).uintval();
   bool should_round_to_odd =
       (lo_sum_u & fputil::FPBits<float>::FRACTION_MASK) == 0 && has_residual;
   uint32_t rounding_adj =
-      ((lo_sum_hi > 0.0f) == (residual_is_pos)) ? 1U : uint32_t(-1);
+      ((lo_sum > 0.0f) == (is_residual_positive)) ? 1U : uint32_t(-1);
   lo_sum_u += should_round_to_odd ? rounding_adj : 0U;
   exp_u.lo = fputil::FPBits<float>(lo_sum_u).get_val();
-
   return exp_u;
 }
 
@@ -630,44 +603,39 @@ LIBC_INLINE FloatFloat exp_eval(const FloatFloat &r,
                                 const FloatFloat &table_entry) {
   // Evaluate at r.hi; correct for r.lo before multiplying by the table entry.
   const float x = r.hi;
-  // Retain the square residual for reconstructing expm1(x).
   FloatFloat x2 = fputil::exact_mult(x, x);
   FloatFloat poly_q = eval_poly_q(x);
 
-  // Form the high word of expm1(x) and its FMA residual.
-  float expm1_x_hi = fputil::multiply_add(x2.hi, poly_q.hi, x);
-  float expm1_x_resid = fputil::multiply_add(x2.hi, poly_q.hi, x - expm1_x_hi);
+  float expm1_x = fputil::multiply_add(x2.hi, poly_q.hi, x);
+  float expm1_x_residual = fputil::multiply_add(x2.hi, poly_q.hi, x - expm1_x);
 
-  // Compute the square and range-reduction corrections independently of
-  // poly_q.lo.
-  float exp_r_hi = 1.0f + expm1_x_hi;
+  float exp_r_hi = 1.0f + expm1_x;
   float expm1_r_lo = fputil::multiply_add(r.lo, exp_r_hi, x2.lo * poly_q.hi);
-  expm1_r_lo += expm1_x_resid;
+  expm1_r_lo += expm1_x_residual;
   expm1_r_lo = fputil::multiply_add(x2.hi, poly_q.lo, expm1_r_lo);
 
-  FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_x_hi);
+  FloatFloat table_product = fputil::exact_mult(table_entry.hi, expm1_x);
   table_product.lo =
       fputil::multiply_add(table_entry.hi, expm1_r_lo, table_product.lo);
   float corr = fputil::multiply_add(table_entry.lo, exp_r_hi, table_product.lo);
   FloatFloat exp_u = fputil::exact_add(table_entry.hi, table_product.hi);
 
-  float lo_sum_hi = exp_u.lo + corr;
-  float corr_hi = lo_sum_hi - exp_u.lo;
-  // Only the sign and zero status of corr - corr_hi are needed. For these
-  // finite operands, comparisons preserve both without forming the difference.
-  bool has_residual = corr != corr_hi;
-  bool residual_is_pos = corr > corr_hi;
+  // First two steps of FastTwoSum; only the residual's zero status and sign
+  // are needed for rounding to odd.
+  float lo_sum = exp_u.lo + corr;
+  float recovered_corr = lo_sum - exp_u.lo;
+  bool has_residual = corr != recovered_corr;
+  bool is_residual_positive = corr > recovered_corr;
 
   // Round inexact low sums to odd when they round to a power of two,
   // preserving the side of a midpoint for the final RN-even addition.
-  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum_hi).uintval();
+  uint32_t lo_sum_u = fputil::FPBits<float>(lo_sum).uintval();
   bool should_round_to_odd =
       (lo_sum_u & fputil::FPBits<float>::FRACTION_MASK) == 0 && has_residual;
   uint32_t rounding_adj =
-      ((lo_sum_hi > 0.0f) == (residual_is_pos)) ? 1U : uint32_t(-1);
+      ((lo_sum > 0.0f) == (is_residual_positive)) ? 1U : uint32_t(-1);
   lo_sum_u += should_round_to_odd ? rounding_adj : 0U;
   exp_u.lo = fputil::FPBits<float>(lo_sum_u).get_val();
-
   return exp_u;
 }
 
